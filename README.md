@@ -220,10 +220,6 @@ The proxy stores request/response data in SQLite with the following structure:
 4. Ensure all tests pass with `make test`
 5. Submit a pull request
 
-## License
-
-[License type to be determined]
-
 ## Support
 
 For issues and questions, please use the GitHub issue tracker.
