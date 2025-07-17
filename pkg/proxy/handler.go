@@ -351,7 +351,7 @@ func (p *ProxyHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 <head>
   <meta charset="utf-8">
   <meta http-equiv="refresh" content="10">
-  <title>Strangler Fig Dashboard</title>
+  <title>Strangler Fig Proxy Dashboard</title>
   <style>
     :root {
       --good-bg: #d1f5d3;
@@ -366,7 +366,7 @@ func (p *ProxyHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
   </style>
 </head>
 <body>
-  <h1>Strangler Fig Dashboard</h1>
+  <h1>Strangler Fig Proxy Dashboard</h1>
 
   <section id="stats">
     <p>Total requests: {{.Total}}</p>
