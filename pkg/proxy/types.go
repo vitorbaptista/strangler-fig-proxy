@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"path"
+	"reflect"
 	"strings"
 	"time"
 
@@ -164,7 +165,7 @@ func CompareResponses(mainStatus, newStatus int, mainHeaders, newHeaders, mainBo
 		return false, "status"
 	}
 
-	if strings.TrimSpace(mainBody) != strings.TrimSpace(newBody) {
+	if !compareJSONBodies(strings.TrimSpace(mainBody), strings.TrimSpace(newBody)) {
 		return false, "body"
 	}
 
@@ -173,4 +174,27 @@ func CompareResponses(mainStatus, newStatus int, mainHeaders, newHeaders, mainBo
 	}
 
 	return true, ""
+}
+
+func compareJSONBodies(mainBody, newBody string) bool {
+	// If both bodies are empty or identical, they match
+	if mainBody == newBody {
+		return true
+	}
+
+	// Try to parse as JSON and compare semantically
+	var mainJSON, newJSON interface{}
+
+	if err := json.Unmarshal([]byte(mainBody), &mainJSON); err != nil {
+		// If main body is not valid JSON, fall back to string comparison
+		return mainBody == newBody
+	}
+
+	if err := json.Unmarshal([]byte(newBody), &newJSON); err != nil {
+		// If new body is not valid JSON, fall back to string comparison
+		return mainBody == newBody
+	}
+
+	// Both are valid JSON, compare them semantically
+	return reflect.DeepEqual(mainJSON, newJSON)
 }

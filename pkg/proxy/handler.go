@@ -52,28 +52,45 @@ func (p *ProxyHandler) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var mainResponse *http.Response
 	var newResponse *http.Response
 	var mainResponseTime, newResponseTime time.Duration
+	var mainResponseBody, newResponseBody []byte
 
 	routeToNewServer := p.config.ShouldRouteToNewServer(r.URL.Path)
 
 	if routeToNewServer {
 		newResponse, newResponseTime = p.forwardRequest(r, p.config.NewServerURL, requestBody)
 		if newResponse != nil {
+			newResponseBody, _ = io.ReadAll(newResponse.Body)
+			newResponse.Body.Close()
+			newResponse.Body = io.NopCloser(bytes.NewBuffer(newResponseBody))
 			p.copyResponse(w, newResponse)
 		} else {
 			http.Error(w, "New server unavailable", http.StatusServiceUnavailable)
 		}
 		mainResponse, mainResponseTime = p.forwardRequest(r, p.config.MainServerURL, requestBody)
+		if mainResponse != nil {
+			mainResponseBody, _ = io.ReadAll(mainResponse.Body)
+			mainResponse.Body.Close()
+			mainResponse.Body = io.NopCloser(bytes.NewBuffer(mainResponseBody))
+		}
 	} else {
 		mainResponse, mainResponseTime = p.forwardRequest(r, p.config.MainServerURL, requestBody)
 		if mainResponse != nil {
+			mainResponseBody, _ = io.ReadAll(mainResponse.Body)
+			mainResponse.Body.Close()
+			mainResponse.Body = io.NopCloser(bytes.NewBuffer(mainResponseBody))
 			p.copyResponse(w, mainResponse)
 		} else {
 			http.Error(w, "Main server unavailable", http.StatusServiceUnavailable)
 		}
 		newResponse, newResponseTime = p.forwardRequest(r, p.config.NewServerURL, requestBody)
+		if newResponse != nil {
+			newResponseBody, _ = io.ReadAll(newResponse.Body)
+			newResponse.Body.Close()
+			newResponse.Body = io.NopCloser(bytes.NewBuffer(newResponseBody))
+		}
 	}
 
-	go p.logRequest(r, requestBody, mainResponse, newResponse, mainResponseTime, newResponseTime, startTime)
+	go p.logRequest(r, requestBody, mainResponse, newResponse, mainResponseTime, newResponseTime, startTime, mainResponseBody, newResponseBody)
 }
 
 func (p *ProxyHandler) forwardToMain(w http.ResponseWriter, r *http.Request) {
@@ -132,8 +149,6 @@ func (p *ProxyHandler) forwardRequest(r *http.Request, serverURL string, request
 }
 
 func (p *ProxyHandler) copyResponse(w http.ResponseWriter, resp *http.Response) {
-	defer resp.Body.Close()
-
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
@@ -144,7 +159,7 @@ func (p *ProxyHandler) copyResponse(w http.ResponseWriter, resp *http.Response) 
 	io.Copy(w, resp.Body)
 }
 
-func (p *ProxyHandler) logRequest(r *http.Request, requestBody []byte, mainResp, newResp *http.Response, mainTime, newTime time.Duration, startTime time.Time) {
+func (p *ProxyHandler) logRequest(r *http.Request, requestBody []byte, mainResp, newResp *http.Response, mainTime, newTime time.Duration, startTime time.Time, mainResponseBody, newResponseBody []byte) {
 	record := &RequestRecord{
 		Timestamp:          startTime,
 		Method:             r.Method,
@@ -163,14 +178,8 @@ func (p *ProxyHandler) logRequest(r *http.Request, requestBody []byte, mainResp,
 		record.MainStatus = mainResp.StatusCode
 		mainHeaders = HeadersToJSON(mainResp.Header)
 		record.MainHeaders = mainHeaders
-
-		if bodyBytes, err := io.ReadAll(mainResp.Body); err == nil {
-			mainBody = string(bodyBytes)
-			record.MainBody = mainBody
-		} else {
-			log.Printf("Error reading main server response body: %v", err)
-		}
-		mainResp.Body.Close()
+		mainBody = string(mainResponseBody)
+		record.MainBody = mainBody
 	} else {
 		log.Printf("Main server did not respond for %s %s", r.Method, r.URL.Path)
 	}
@@ -179,14 +188,8 @@ func (p *ProxyHandler) logRequest(r *http.Request, requestBody []byte, mainResp,
 		record.NewStatus = newResp.StatusCode
 		newHeaders = HeadersToJSON(newResp.Header)
 		record.NewHeaders = newHeaders
-
-		if bodyBytes, err := io.ReadAll(newResp.Body); err == nil {
-			newBody = string(bodyBytes)
-			record.NewBody = newBody
-		} else {
-			log.Printf("Error reading new server response body: %v", err)
-		}
-		newResp.Body.Close()
+		newBody = string(newResponseBody)
+		record.NewBody = newBody
 	} else {
 		log.Printf("New server did not respond for %s %s", r.Method, r.URL.Path)
 	}
