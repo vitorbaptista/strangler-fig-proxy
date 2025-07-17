@@ -169,10 +169,6 @@ func CompareResponses(mainStatus, newStatus int, mainHeaders, newHeaders, mainBo
 		return false, "body"
 	}
 
-	if mainHeaders != newHeaders {
-		return false, "headers"
-	}
-
 	return true, ""
 }
 

@@ -293,15 +293,15 @@ func TestCompareResponses(t *testing.T) {
 			expectedMismatch: "body",
 		},
 		{
-			name:             "different headers should not match",
+			name:             "different headers should match (headers not compared)",
 			mainStatus:       200,
 			newStatus:        200,
 			mainHeaders:      `{"Content-Type":["application/json"]}`,
 			newHeaders:       `{"Content-Type":["text/plain"]}`,
 			mainBody:         `{"result": "success"}`,
 			newBody:          `{"result": "success"}`,
-			expectedMatch:    false,
-			expectedMismatch: "headers",
+			expectedMatch:    true,
+			expectedMismatch: "",
 		},
 		{
 			name:             "whitespace differences should match",
