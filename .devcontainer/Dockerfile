@@ -2,7 +2,7 @@
 FROM mcr.microsoft.com/devcontainers/go:1.23
 
 # Install Node.js and npm
-RUN apt-get update && apt-get install -y curl python3-pip
+RUN apt-get update && apt-get install -y curl python3-pip docker.io sqlite3
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 RUN apt-get install -y nodejs
 
@@ -11,4 +11,3 @@ RUN npm install -g @anthropic-ai/claude-code
 
 # Install pre-commit globally
 RUN pip install pre-commit --break-system-packages
-
