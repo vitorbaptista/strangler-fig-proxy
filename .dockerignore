@@ -1,0 +1,11 @@
+bin/
+build/
+*.db
+.git/
+.gitignore
+README.md
+docs/
+test/
+*.md
+Dockerfile
+.dockerignore

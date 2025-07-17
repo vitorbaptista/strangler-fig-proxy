@@ -8,6 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"strangler-fix-proxy/pkg/proxy"
 )
 
 func main() {
@@ -20,17 +22,17 @@ func main() {
 		log.Fatal("NEW_SERVER_URL is required")
 	}
 
-	database, err := InitDatabase(config.DatabasePath)
+	database, err := proxy.InitDatabase(config.DatabasePath)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer database.Close()
 
-	proxy := NewProxyHandler(config, database)
+	proxyHandler := proxy.NewProxyHandler(config, database)
 
 	server := &http.Server{
 		Addr:    ":" + config.Port,
-		Handler: proxy,
+		Handler: proxyHandler,
 	}
 
 	go func() {
@@ -43,8 +45,11 @@ func main() {
 
 		if len(config.NewServerRoutes) > 0 {
 			log.Printf("New server routes: %v", config.NewServerRoutes)
+		} else {
+			log.Printf("No new server routes configured - all traffic goes to main server")
 		}
 
+		log.Printf("Proxy ready to handle requests")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed to start: %v", err)
 		}

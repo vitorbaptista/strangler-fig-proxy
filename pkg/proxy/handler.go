@@ -1,4 +1,4 @@
-package main
+package proxy
 
 import (
 	"bytes"
@@ -28,6 +28,7 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Apply sampling rate - if random value is above sampling rate, skip logging
 	if rand.Float64() > p.config.SamplingRate {
 		p.forwardToMain(w, r)
 		return
@@ -147,9 +148,9 @@ func (p *ProxyHandler) logRequest(r *http.Request, requestBody []byte, mainResp,
 	record := &RequestRecord{
 		Timestamp:          startTime,
 		Method:             r.Method,
-		URLPath:            normalizeURLPath(r.URL.Path),
+		URLPath:            NormalizeURLPath(r.URL.Path),
 		QueryParams:        r.URL.RawQuery,
-		RequestHeaders:     headersToJSON(r.Header),
+		RequestHeaders:     HeadersToJSON(r.Header),
 		RequestBody:        string(requestBody),
 		MainResponseTimeMs: int(mainTime.Milliseconds()),
 		NewResponseTimeMs:  int(newTime.Milliseconds()),
@@ -160,37 +161,51 @@ func (p *ProxyHandler) logRequest(r *http.Request, requestBody []byte, mainResp,
 
 	if mainResp != nil {
 		record.MainStatus = mainResp.StatusCode
-		mainHeaders = headersToJSON(mainResp.Header)
+		mainHeaders = HeadersToJSON(mainResp.Header)
 		record.MainHeaders = mainHeaders
 
 		if bodyBytes, err := io.ReadAll(mainResp.Body); err == nil {
 			mainBody = string(bodyBytes)
 			record.MainBody = mainBody
+		} else {
+			log.Printf("Error reading main server response body: %v", err)
 		}
 		mainResp.Body.Close()
+	} else {
+		log.Printf("Main server did not respond for %s %s", r.Method, r.URL.Path)
 	}
 
 	if newResp != nil {
 		record.NewStatus = newResp.StatusCode
-		newHeaders = headersToJSON(newResp.Header)
+		newHeaders = HeadersToJSON(newResp.Header)
 		record.NewHeaders = newHeaders
 
 		if bodyBytes, err := io.ReadAll(newResp.Body); err == nil {
 			newBody = string(bodyBytes)
 			record.NewBody = newBody
+		} else {
+			log.Printf("Error reading new server response body: %v", err)
 		}
 		newResp.Body.Close()
+	} else {
+		log.Printf("New server did not respond for %s %s", r.Method, r.URL.Path)
 	}
 
 	if mainResp != nil && newResp != nil {
-		record.ResponsesMatch, record.MismatchType = compareResponses(
+		record.ResponsesMatch, record.MismatchType = CompareResponses(
 			record.MainStatus, record.NewStatus,
 			mainHeaders, newHeaders,
 			mainBody, newBody,
 		)
+
+		if !record.ResponsesMatch {
+			log.Printf("Response mismatch detected for %s %s - Type: %s", r.Method, r.URL.Path, record.MismatchType)
+		}
 	}
 
-	p.database.InsertRequest(record)
+	if err := p.database.InsertRequest(record); err != nil {
+		log.Printf("Failed to log request to database: %v", err)
+	}
 }
 
 func (p *ProxyHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {

@@ -36,3 +36,28 @@ run-example:
 # Build for production
 build-prod:
 	CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o bin/strangler-fix-proxy ./cmd/strangler-fix-proxy
+
+# Docker targets
+docker-build:
+	docker build -t strangler-fix-proxy:latest .
+
+docker-run:
+	docker run -p 8080:8080 \
+		-e MAIN_SERVER_URL=http://host.docker.internal:8081 \
+		-e NEW_SERVER_URL=http://host.docker.internal:8082 \
+		-e SAMPLING_RATE=1.0 \
+		-v $(PWD)/data:/app/data \
+		strangler-fix-proxy:latest
+
+docker-run-example:
+	docker run -p 8080:8080 \
+		-e MAIN_SERVER_URL=http://httpbin.org \
+		-e NEW_SERVER_URL=http://httpbin.org \
+		-e SAMPLING_RATE=1.0 \
+		strangler-fix-proxy:latest
+
+docker-stop:
+	docker stop $$(docker ps -q --filter ancestor=strangler-fix-proxy:latest)
+
+docker-clean:
+	docker rmi strangler-fix-proxy:latest

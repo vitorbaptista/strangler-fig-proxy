@@ -1,4 +1,4 @@
-package main
+package proxy
 
 import (
 	"database/sql"
@@ -10,6 +10,26 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+type Config struct {
+	MainServerURL         string
+	NewServerURL          string
+	SamplingRate          float64
+	DatabasePath          string
+	DatabaseMaxSizeMB     int
+	DatabaseRetentionDays int
+	Port                  string
+	NewServerRoutes       []string
+}
+
+func (c *Config) ShouldRouteToNewServer(path string) bool {
+	for _, route := range c.NewServerRoutes {
+		if strings.HasPrefix(path, route) {
+			return true
+		}
+	}
+	return false
+}
 
 type Database struct {
 	db *sql.DB
@@ -119,7 +139,7 @@ func (d *Database) Close() error {
 	return d.db.Close()
 }
 
-func normalizeURLPath(rawPath string) string {
+func NormalizeURLPath(rawPath string) string {
 	normalized := path.Clean(rawPath)
 	if normalized == "." {
 		return "/"
@@ -127,7 +147,7 @@ func normalizeURLPath(rawPath string) string {
 	return normalized
 }
 
-func headersToJSON(headers map[string][]string) string {
+func HeadersToJSON(headers map[string][]string) string {
 	if headers == nil {
 		return "{}"
 	}
@@ -139,7 +159,7 @@ func headersToJSON(headers map[string][]string) string {
 	return string(data)
 }
 
-func compareResponses(mainStatus, newStatus int, mainHeaders, newHeaders, mainBody, newBody string) (bool, string) {
+func CompareResponses(mainStatus, newStatus int, mainHeaders, newHeaders, mainBody, newBody string) (bool, string) {
 	if mainStatus != newStatus {
 		return false, "status"
 	}

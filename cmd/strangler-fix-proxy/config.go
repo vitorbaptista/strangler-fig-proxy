@@ -4,21 +4,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"strangler-fix-proxy/pkg/proxy"
 )
 
-type Config struct {
-	MainServerURL         string
-	NewServerURL          string
-	SamplingRate          float64
-	DatabasePath          string
-	DatabaseMaxSizeMB     int
-	DatabaseRetentionDays int
-	Port                  string
-	NewServerRoutes       []string
-}
-
-func LoadConfig() *Config {
-	config := &Config{
+func LoadConfig() *proxy.Config {
+	config := &proxy.Config{
 		MainServerURL:         getEnv("MAIN_SERVER_URL", ""),
 		NewServerURL:          getEnv("NEW_SERVER_URL", ""),
 		SamplingRate:          getEnvFloat("SAMPLING_RATE", 1.0),
@@ -62,13 +53,4 @@ func getEnvSlice(key string, defaultValue []string) []string {
 		return strings.Split(value, ",")
 	}
 	return defaultValue
-}
-
-func (c *Config) ShouldRouteToNewServer(path string) bool {
-	for _, route := range c.NewServerRoutes {
-		if strings.HasPrefix(path, route) {
-			return true
-		}
-	}
-	return false
 }
