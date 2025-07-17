@@ -17,4 +17,4 @@
   ],
   "workspaceFolder": "/workspace",
   "postCreateCommand": "go mod tidy && pre-commit install && go install golang.org/x/tools/cmd/goimports@latest"
-} 
+}

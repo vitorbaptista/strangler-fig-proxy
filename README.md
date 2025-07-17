@@ -5,7 +5,7 @@ A reverse proxy designed for zero-downtime migration between service versions us
 ## Features
 
 - **Zero-downtime migration** - Gradual traffic shifting between service versions
-- **Response comparison** - Automatic detection of behavioral differences  
+- **Response comparison** - Automatic detection of behavioral differences
 - **Configurable routing** - Route specific URL patterns to new service
 - **Built-in dashboard** - Monitor differences and system behavior at `/__strangler_fig`
 - **High performance** - Minimal latency overhead with concurrent processing
