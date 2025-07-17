@@ -213,14 +213,13 @@ Given the proxy nature of the system, integration tests will be the primary test
 ### Phase 2: Dashboard
 - Internal web interface at `/__strangler_fig`
 - Basic statistics and mismatch viewing
-- Response diff viewer
 
-### Phase 3: Advanced Routing
+### Phase 3: Advanced Routing (pending)
 - URL pattern-based routing to new server
 - Configuration hot-reload
 - Percentage-based traffic splitting
 
-### Phase 4: Production Hardening
+### Phase 4: Production Hardening (pending)
 - Metrics and monitoring
 - Performance optimizations
 - Database maintenance tasks
