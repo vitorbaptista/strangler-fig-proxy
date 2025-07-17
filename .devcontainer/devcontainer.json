@@ -16,5 +16,5 @@
     "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
   ],
   "workspaceFolder": "/workspace",
-  "postCreateCommand": "go mod tidy"
+  "postCreateCommand": "go mod tidy && pre-commit install && go install golang.org/x/tools/cmd/goimports@latest"
 } 

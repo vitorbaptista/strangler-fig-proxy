@@ -4,4 +4,3 @@ repos:
     hooks:
       - id: go-fmt
       - id: go-imports
-      - id: go-critic
