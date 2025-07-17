@@ -1,5 +1,7 @@
 # Strangler Fig Reverse Proxy
 
+[![Test](https://github.com/vitorbaptista/strangler-fix-proxy/actions/workflows/test.yml/badge.svg)](https://github.com/vitorbaptista/strangler-fix-proxy/actions/workflows/test.yml)
+
 A reverse proxy designed for zero-downtime migration between service versions using the strangler fig pattern. Routes requests to both legacy and new systems, compares responses, and provides visibility into behavioral differences.
 
 ## Features
