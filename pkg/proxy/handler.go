@@ -2,11 +2,16 @@ package proxy
 
 import (
 	"bytes"
+	"database/sql"
+	"fmt"
+	"html/template"
 	"io"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -212,39 +217,199 @@ func (p *ProxyHandler) logRequest(r *http.Request, requestBody []byte, mainResp,
 }
 
 func (p *ProxyHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(`
-<!DOCTYPE html>
-<html>
+	// Parse limit parameter (default 25, max 200)
+	limit := 25
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n > 0 && n <= 200 {
+				limit = n
+			}
+		}
+	}
+
+	// Collect overall statistics
+	var total, matches, mismatches int
+	if err := p.database.db.QueryRow("SELECT COUNT(*) FROM requests").Scan(&total); err != nil {
+		http.Error(w, "failed to query total", http.StatusInternalServerError)
+		return
+	}
+	if err := p.database.db.QueryRow("SELECT COUNT(*) FROM requests WHERE responses_match = 1").Scan(&matches); err != nil {
+		http.Error(w, "failed to query matches", http.StatusInternalServerError)
+		return
+	}
+	if err := p.database.db.QueryRow("SELECT COUNT(*) FROM requests WHERE responses_match = 0").Scan(&mismatches); err != nil {
+		http.Error(w, "failed to query mismatches", http.StatusInternalServerError)
+		return
+	}
+
+	// Average relative response time (new / main)
+	var avgRel sql.NullFloat64
+	if err := p.database.db.QueryRow(`SELECT AVG(CAST(new_response_time_ms AS REAL) / NULLIF(main_response_time_ms,0)) FROM requests WHERE main_response_time_ms > 0`).Scan(&avgRel); err != nil {
+		http.Error(w, "failed to query avg response time", http.StatusInternalServerError)
+		return
+	}
+	avgRelTime := -1.0
+	if avgRel.Valid {
+		avgRelTime = avgRel.Float64
+	}
+
+	// Recent rows
+	rows, err := p.database.db.Query(`
+		SELECT id, url_path, mismatch_type, responses_match, main_response_time_ms, new_response_time_ms
+		  FROM requests
+	  ORDER BY id DESC
+		 LIMIT ?`, limit)
+	if err != nil {
+		http.Error(w, "failed to query rows", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type TableRow struct {
+		ID             int64
+		URL            string
+		MismatchType   string
+		ResponsesMatch bool
+		ChangeDisplay  string // e.g. +20% / -35% / —
+	}
+
+	var tableRows []TableRow
+	for rows.Next() {
+		var (
+			id                            int64
+			urlPath                       string
+			mismatchType                  sql.NullString
+			responsesMatchNull            sql.NullBool
+			mainRespTimeMs, newRespTimeMs sql.NullInt64
+		)
+
+		if err := rows.Scan(&id, &urlPath, &mismatchType, &responsesMatchNull, &mainRespTimeMs, &newRespTimeMs); err != nil {
+			continue // skip bad row
+		}
+
+		responsesMatch := false
+		if responsesMatchNull.Valid {
+			responsesMatch = responsesMatchNull.Bool
+		}
+
+		changeDisplay := "—"
+		if mainRespTimeMs.Valid && newRespTimeMs.Valid && mainRespTimeMs.Int64 > 0 {
+			ratio := float64(newRespTimeMs.Int64) / float64(mainRespTimeMs.Int64)
+			percentChange := (ratio - 1) * 100
+			sign := ""
+			if percentChange > 0 {
+				sign = "+"
+			}
+			changeDisplay = fmt.Sprintf("%s%d%%", sign, int(math.Round(percentChange)))
+		}
+
+		tableRows = append(tableRows, TableRow{
+			ID:             id,
+			URL:            urlPath,
+			MismatchType:   mismatchType.String,
+			ResponsesMatch: responsesMatch,
+			ChangeDisplay:  changeDisplay,
+		})
+	}
+
+	// Prepare data for template
+	data := struct {
+		Total, Matches, Mismatches int
+		MatchRatio                 float64
+		AvgRelTime                 float64
+		AvgChangeDisplay           string
+		Limit                      int
+		Rows                       []TableRow
+	}{
+		Total:      total,
+		Matches:    matches,
+		Mismatches: mismatches,
+		MatchRatio: func() float64 {
+			if total == 0 {
+				return 0
+			}
+			return float64(matches) / float64(total)
+		}(),
+		AvgRelTime: avgRelTime,
+		AvgChangeDisplay: func() string {
+			if avgRelTime < 0 {
+				return "—"
+			}
+			percentChange := (avgRelTime - 1) * 100
+			sign := ""
+			if percentChange > 0 {
+				sign = "+"
+			}
+			return fmt.Sprintf("%s%d%%", sign, int(math.Round(percentChange)))
+		}(),
+		Limit: limit,
+		Rows:  tableRows,
+	}
+
+	const tmplStr = `<!DOCTYPE html>
+<html lang="en">
 <head>
-    <title>Strangler Fig Dashboard</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .stats { display: flex; gap: 20px; margin-bottom: 20px; }
-        .stat-card { border: 1px solid #ddd; padding: 15px; border-radius: 5px; }
-        .stat-value { font-size: 24px; font-weight: bold; color: #333; }
-        .stat-label { color: #666; }
-    </style>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="10">
+  <title>Strangler Fig Dashboard</title>
+  <style>
+    :root {
+      --good-bg: #d1f5d3;
+      --bad-bg:  #f8d1d1;
+    }
+    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { padding: .5rem .75rem; border-bottom: 1px solid #ddd; text-align: right; }
+    tr.good { background: var(--good-bg); }
+    tr.bad  { background: var(--bad-bg);  }
+    tr:hover { opacity: .9; }
+  </style>
 </head>
 <body>
-    <h1>Strangler Fig Proxy Dashboard</h1>
-    <div class="stats">
-        <div class="stat-card">
-            <div class="stat-value">-</div>
-            <div class="stat-label">Total Requests</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value">-</div>
-            <div class="stat-label">Matches</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value">-</div>
-            <div class="stat-label">Mismatches</div>
-        </div>
-    </div>
-    <p>Dashboard functionality will be implemented in Phase 2.</p>
-    <p>For now, check the SQLite database at: ` + p.config.DatabasePath + `</p>
+  <h1>Strangler Fig Dashboard</h1>
+
+  <section id="stats">
+    <p>Total requests: {{.Total}}</p>
+    <p>Matches: {{.Matches}}</p>
+    <p>Mismatches: {{.Mismatches}}</p>
+    <p>Match ratio: {{printf "%.2f" (mul100 .MatchRatio)}} %</p>
+    <p>Avg new vs main response time change: {{.AvgChangeDisplay}}</p>
+  </section>
+
+  <section id="recent">
+    <h2>Last {{.Limit}} requests</h2>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>URL</th><th>Failure reason</th><th>Δ Time</th></tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+          <tr class="{{if .ResponsesMatch}}good{{else}}bad{{end}}">
+            <td>{{.ID}}</td>
+            <td>{{.URL}}</td>
+            <td>{{if .ResponsesMatch}}—{{else}}{{.MismatchType}}{{end}}</td>
+            <td>{{.ChangeDisplay}}</td>
+          </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
 </body>
-</html>
-    `))
+</html>`
+
+	funcMap := template.FuncMap{
+		"mul100": func(f float64) float64 { return f * 100 },
+	}
+
+	tmpl, err := template.New("dashboard").Funcs(funcMap).Parse(tmplStr)
+	if err != nil {
+		http.Error(w, "template parse error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := tmpl.Execute(w, data); err != nil {
+		http.Error(w, "template exec error", http.StatusInternalServerError)
+		return
+	}
 }
