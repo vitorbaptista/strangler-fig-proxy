@@ -33,3 +33,4 @@ go.work.sum
 
 bin/
 .claude/*.local.*
+*.db*
