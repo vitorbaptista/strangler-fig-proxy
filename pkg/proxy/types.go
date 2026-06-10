@@ -275,6 +275,100 @@ func (d *Database) Close() error {
 	return d.db.Close()
 }
 
+// RunMaintenance enforces the retention period and maximum database size by
+// deleting the oldest request logs. Either limit can be disabled by passing 0.
+func (d *Database) RunMaintenance(retentionDays, maxSizeMB int) error {
+	if retentionDays > 0 {
+		cutoff := fmt.Sprintf("-%d days", retentionDays)
+		if _, err := d.db.Exec(`DELETE FROM requests WHERE timestamp < datetime('now', ?)`, cutoff); err != nil {
+			return fmt.Errorf("retention cleanup failed: %w", err)
+		}
+	}
+
+	if maxSizeMB > 0 {
+		maxBytes := int64(maxSizeMB) * 1024 * 1024
+		for {
+			size, err := d.sizeBytes()
+			if err != nil {
+				return fmt.Errorf("size check failed: %w", err)
+			}
+			if size <= maxBytes {
+				break
+			}
+
+			// Delete the oldest 20% of rows per pass so even very large
+			// databases shrink in a bounded number of (expensive) VACUUMs.
+			var count int64
+			if err := d.db.QueryRow(`SELECT COUNT(*) FROM requests`).Scan(&count); err != nil {
+				return fmt.Errorf("size cleanup failed: %w", err)
+			}
+			batch := count / 5
+			if batch < 1000 {
+				batch = 1000
+			}
+
+			result, err := d.db.Exec(`DELETE FROM requests WHERE id IN (SELECT id FROM requests ORDER BY id ASC LIMIT ?)`, batch)
+			if err != nil {
+				return fmt.Errorf("size cleanup failed: %w", err)
+			}
+			deleted, _ := result.RowsAffected()
+			if deleted == 0 {
+				break
+			}
+
+			// Reclaim the freed pages so sizeBytes reflects the deletions.
+			if _, err := d.db.Exec(`VACUUM`); err != nil {
+				return fmt.Errorf("vacuum failed: %w", err)
+			}
+		}
+	}
+
+	// Keep the WAL file from growing unbounded.
+	if _, err := d.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("wal checkpoint failed: %w", err)
+	}
+
+	return nil
+}
+
+func (d *Database) sizeBytes() (int64, error) {
+	var pageCount, pageSize int64
+	if err := d.db.QueryRow(`PRAGMA page_count`).Scan(&pageCount); err != nil {
+		return 0, err
+	}
+	if err := d.db.QueryRow(`PRAGMA page_size`).Scan(&pageSize); err != nil {
+		return 0, err
+	}
+	return pageCount * pageSize, nil
+}
+
+// StartMaintenance runs RunMaintenance immediately and then on the given
+// interval until the returned stop function is called. Errors are logged but
+// never interrupt the proxy (NFR-2.2).
+func (d *Database) StartMaintenance(retentionDays, maxSizeMB int, interval time.Duration) (stop func()) {
+	done := make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			if err := d.RunMaintenance(retentionDays, maxSizeMB); err != nil {
+				log.Printf("Database maintenance error: %v", err)
+			}
+
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
+}
+
 func NormalizeURLPath(rawPath string) string {
 	normalized := path.Clean(rawPath)
 	if normalized == "." {

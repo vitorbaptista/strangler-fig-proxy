@@ -221,11 +221,11 @@ Given the proxy nature of the system, integration tests will be the primary test
 - Automatic fallback to the main server when a request routed to the new server fails
 - `served_by` tracking and migration progress stat in the dashboard
 
-### Phase 4: Production Hardening (pending)
-- Metrics and monitoring
-- Performance optimizations
-- Database maintenance tasks
-- Response transformation capabilities
+### Phase 4: Production Hardening (in progress)
+- Database maintenance tasks: hourly enforcement of `DATABASE_RETENTION_DAYS` and `DATABASE_MAX_SIZE_MB` (done)
+- Metrics and monitoring (pending: per-path stats, diff viewer in dashboard)
+- Performance optimizations (pending)
+- Response transformation capabilities (pending)
 
 ## 8. Success Criteria
 

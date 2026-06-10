@@ -28,6 +28,9 @@ func main() {
 	}
 	defer database.Close()
 
+	stopMaintenance := database.StartMaintenance(config.DatabaseRetentionDays, config.DatabaseMaxSizeMB, time.Hour)
+	defer stopMaintenance()
+
 	proxyHandler := proxy.NewProxyHandler(config, database)
 
 	server := &http.Server{
