@@ -52,11 +52,14 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *ProxyHandler) handleInternal(w http.ResponseWriter, r *http.Request) {
-	switch strings.TrimSuffix(r.URL.Path, "/") {
-	case "/__strangler_fig":
+	path := strings.TrimSuffix(r.URL.Path, "/")
+	switch {
+	case path == "/__strangler_fig":
 		p.handleDashboard(w, r)
-	case "/__strangler_fig/api/routes":
+	case path == "/__strangler_fig/api/routes":
 		p.handleRoutesAPI(w, r)
+	case strings.HasPrefix(path, "/__strangler_fig/requests/"):
+		p.handleRequestDetail(w, r, strings.TrimPrefix(path, "/__strangler_fig/requests/"))
 	default:
 		http.NotFound(w, r)
 	}
@@ -332,6 +335,40 @@ func (p *ProxyHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		avgRelTime = avgRel.Float64
 	}
 
+	// Per-path statistics: which paths are safe to migrate
+	type PathStat struct {
+		Path           string
+		Count          int
+		MatchPct       float64
+		ServedByNewPct float64
+		AvgMainMs      float64
+		AvgNewMs       float64
+	}
+	var pathStats []PathStat
+	pathRows, err := p.database.db.Query(`
+		SELECT url_path,
+		       COUNT(*) AS cnt,
+		       100.0 * SUM(CASE WHEN responses_match = 1 THEN 1 ELSE 0 END) / COUNT(*),
+		       100.0 * SUM(CASE WHEN served_by = 'new' THEN 1 ELSE 0 END) / COUNT(*),
+		       COALESCE(AVG(main_response_time_ms), 0),
+		       COALESCE(AVG(new_response_time_ms), 0)
+		  FROM requests
+	  GROUP BY url_path
+	  ORDER BY cnt DESC
+		 LIMIT 50`)
+	if err != nil {
+		http.Error(w, "failed to query path stats", http.StatusInternalServerError)
+		return
+	}
+	for pathRows.Next() {
+		var s PathStat
+		if err := pathRows.Scan(&s.Path, &s.Count, &s.MatchPct, &s.ServedByNewPct, &s.AvgMainMs, &s.AvgNewMs); err != nil {
+			continue
+		}
+		pathStats = append(pathStats, s)
+	}
+	pathRows.Close()
+
 	// Recent rows
 	rows, err := p.database.db.Query(`
 		SELECT id, url_path, mismatch_type, responses_match, main_response_time_ms, new_response_time_ms
@@ -401,7 +438,9 @@ func (p *ProxyHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Limit                      int
 		Rows                       []TableRow
 		Routes                     []Route
+		PathStats                  []PathStat
 	}{
+		PathStats:  pathStats,
 		Total:      total,
 		Matches:    matches,
 		Mismatches: mismatches,
@@ -531,6 +570,27 @@ func (p *ProxyHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
     });
   </script>
 
+  <section id="paths">
+    <h2>Per-path statistics</h2>
+    <table>
+      <thead>
+        <tr><th>Path</th><th>Requests</th><th>Match %</th><th>Served by new %</th><th>Avg main (ms)</th><th>Avg new (ms)</th></tr>
+      </thead>
+      <tbody>
+        {{range .PathStats}}
+          <tr>
+            <td style="text-align:left">{{.Path}}</td>
+            <td>{{.Count}}</td>
+            <td>{{printf "%.1f" .MatchPct}}</td>
+            <td>{{printf "%.1f" .ServedByNewPct}}</td>
+            <td>{{printf "%.1f" .AvgMainMs}}</td>
+            <td>{{printf "%.1f" .AvgNewMs}}</td>
+          </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+
   <section id="recent">
     <h2>Last {{.Limit}} requests</h2>
     <table>
@@ -540,7 +600,7 @@ func (p *ProxyHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
       <tbody>
         {{range .Rows}}
           <tr class="{{if .ResponsesMatch}}good{{else}}bad{{end}}">
-            <td>{{.ID}}</td>
+            <td><a href="/__strangler_fig/requests/{{.ID}}">{{.ID}}</a></td>
             <td>{{.URL}}</td>
             <td>{{if .ResponsesMatch}}—{{else}}{{.MismatchType}}{{end}}</td>
             <td>{{.ChangeDisplay}}</td>

@@ -237,3 +237,96 @@ func TestDashboardShowsRoutes(t *testing.T) {
 		t.Error("Expected dashboard to show migration progress stat")
 	}
 }
+
+func TestRequestDetailPage(t *testing.T) {
+	mainServer := NewMainServer()
+	differentServer := NewDifferentServer()
+	defer mainServer.Close()
+	defer differentServer.Close()
+
+	proxyServer, _ := setupRoutingProxy(t, mainServer.URL, differentServer.URL,
+		"/tmp/test_proxy_detail.db", nil)
+
+	resp, err := http.Get(proxyServer.URL + "/some/path")
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	resp.Body.Close()
+
+	time.Sleep(100 * time.Millisecond)
+
+	detail, err := http.Get(proxyServer.URL + "/__strangler_fig/requests/1")
+	if err != nil {
+		t.Fatalf("Failed to GET request detail: %v", err)
+	}
+	defer detail.Body.Close()
+
+	if detail.StatusCode != http.StatusOK {
+		t.Fatalf("Expected status 200 for request detail, got %d", detail.StatusCode)
+	}
+
+	body, err := io.ReadAll(detail.Body)
+	if err != nil {
+		t.Fatalf("Failed to read detail page: %v", err)
+	}
+
+	html := string(body)
+	if !strings.Contains(html, "/some/path") {
+		t.Error("Expected detail page to show the request path")
+	}
+	if !strings.Contains(html, "mismatch") {
+		t.Error("Expected detail page to show mismatch status")
+	}
+	if !strings.Contains(html, "different_response") {
+		t.Error("Expected detail page to show the new server body")
+	}
+
+	// Unknown IDs return 404.
+	missing, err := http.Get(proxyServer.URL + "/__strangler_fig/requests/99999")
+	if err != nil {
+		t.Fatalf("Failed to GET missing request: %v", err)
+	}
+	defer missing.Body.Close()
+	if missing.StatusCode != http.StatusNotFound {
+		t.Errorf("Expected status 404 for unknown request id, got %d", missing.StatusCode)
+	}
+}
+
+func TestDashboardPerPathStats(t *testing.T) {
+	mainServer := NewMainServer()
+	newServer := NewNewServer()
+	defer mainServer.Close()
+	defer newServer.Close()
+
+	proxyServer, _ := setupRoutingProxy(t, mainServer.URL, newServer.URL,
+		"/tmp/test_proxy_path_stats.db", nil)
+
+	for i := 0; i < 3; i++ {
+		resp, err := http.Get(proxyServer.URL + "/stats/path")
+		if err != nil {
+			t.Fatalf("Failed to make request: %v", err)
+		}
+		resp.Body.Close()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	resp, err := http.Get(proxyServer.URL + "/__strangler_fig")
+	if err != nil {
+		t.Fatalf("Failed to GET dashboard: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read dashboard: %v", err)
+	}
+
+	html := string(body)
+	if !strings.Contains(html, "Per-path statistics") {
+		t.Error("Expected dashboard to show per-path statistics section")
+	}
+	if !strings.Contains(html, "/stats/path") {
+		t.Error("Expected dashboard to list /stats/path in per-path stats")
+	}
+}

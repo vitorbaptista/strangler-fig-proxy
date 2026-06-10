@@ -123,7 +123,8 @@ http://localhost:8080/__strangler_fig
 View:
 - Request statistics and match/mismatch ratios
 - Migration progress (% of traffic served by the new server)
-- Recent response differences
+- Per-path statistics: request counts, match %, traffic split, and average response times for each path — so you can see which paths are safe to migrate
+- Recent requests, each linking to a detail page with a side-by-side response diff (JSON bodies are pretty-printed before diffing)
 - Response time metrics
 - Live routing table editor — change traffic percentages without restarting
 
