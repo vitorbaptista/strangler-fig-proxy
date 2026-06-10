@@ -12,9 +12,13 @@ import (
 	"strings"
 )
 
-// maxAssertsPerEntry bounds the flattened JSON asserts for one response; very
-// large bodies fall back to an exact-body assertion instead.
-const maxAssertsPerEntry = 200
+// maxAssertsPerEntry bounds the flattened JSON asserts for one response;
+// larger bodies fall back to an exact-body assertion. The bound exists only
+// to keep generated files manageable - it must stay generous, because the
+// byte-exact fallback fails on formatting/key-order differences that the
+// structural asserts (and the proxy's own comparison) tolerate, and ordinary
+// list endpoints easily produce hundreds of fields.
+const maxAssertsPerEntry = 5000
 
 // GenerateHurl renders recorded traffic as a Hurl (https://hurl.dev) test
 // file asserting the main (legacy) server's behavior. The file uses a
