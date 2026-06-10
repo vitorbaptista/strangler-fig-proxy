@@ -399,3 +399,30 @@ func TestXForwardedForSet(t *testing.T) {
 		t.Error("Expected X-Forwarded-For to be set on the upstream request")
 	}
 }
+
+func TestConnectionListedHeadersNotForwarded(t *testing.T) {
+	var receivedCustom string
+	upstream := NewHeaderCapturingServer(func(h http.Header) {
+		receivedCustom = h.Get("X-Drop-Me")
+	})
+	defer upstream.Close()
+	newServer := NewNewServer()
+	defer newServer.Close()
+
+	proxyServer, _ := setupProxy(t, upstream.URL, newServer.URL, 1.0, nil)
+
+	// Headers named in the Connection header are hop-by-hop (RFC 7230 6.1)
+	// even when they are not in the standard set.
+	req, _ := http.NewRequest("GET", proxyServer.URL+"/test", nil)
+	req.Header.Set("Connection", "X-Drop-Me")
+	req.Header.Set("X-Drop-Me", "secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	resp.Body.Close()
+
+	if receivedCustom != "" {
+		t.Errorf("Expected Connection-listed header to be stripped, upstream received %q", receivedCustom)
+	}
+}

@@ -38,7 +38,7 @@
       <tbody>
         {{range .Routes}}
           <tr><td><input type="text" class="route-prefix" value="{{.Prefix}}"></td>
-              <td><input type="number" class="route-percentage" min="0" max="100" step="1" value="{{.Percentage}}"></td>
+              <td><input type="number" class="route-percentage" min="0" max="100" step="any" value="{{.Percentage}}"></td>
               <td><button onclick="this.closest('tr').remove()">Remove</button></td></tr>
         {{end}}
       </tbody>
@@ -55,7 +55,7 @@
       const tbody = document.querySelector('#routes-table tbody');
       const tr = document.createElement('tr');
       tr.innerHTML = '<td><input type="text" class="route-prefix" placeholder="/api/v2"></td>' +
-        '<td><input type="number" class="route-percentage" min="0" max="100" step="1" value="0"></td>' +
+        '<td><input type="number" class="route-percentage" min="0" max="100" step="any" value="0"></td>' +
         '<td><button onclick="this.closest(\'tr\').remove()">Remove</button></td>';
       tbody.appendChild(tr);
     }
@@ -85,12 +85,19 @@
       }
     }
 
-    // Auto-refresh every 10s, paused while editing routes so input is not lost.
+    // Auto-refresh every 10s, paused while editing routes so input is not
+    // lost and resumed when focus leaves the routes section.
     let refreshTimer = setTimeout(() => location.reload(), 10000);
     document.addEventListener('focusin', e => {
       if (e.target.closest('#routes')) {
         clearTimeout(refreshTimer);
         refreshTimer = null;
+      }
+    });
+    document.addEventListener('focusout', e => {
+      const stillEditing = e.relatedTarget && e.relatedTarget.closest('#routes');
+      if (e.target.closest('#routes') && !stillEditing && !refreshTimer) {
+        refreshTimer = setTimeout(() => location.reload(), 10000);
       }
     });
   </script>

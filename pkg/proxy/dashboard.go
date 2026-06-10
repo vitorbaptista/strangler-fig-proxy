@@ -47,7 +47,7 @@ func (h *Handler) handleRoutesAPI(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		// fall through to the response below
-	case http.MethodPut, http.MethodPost:
+	case http.MethodPut:
 		var routes []Route
 		if err := json.NewDecoder(r.Body).Decode(&routes); err != nil {
 			http.Error(w, fmt.Sprintf("invalid routes JSON: %v", err), http.StatusBadRequest)
@@ -59,7 +59,7 @@ func (h *Handler) handleRoutesAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		slog.Info("routing table updated", "routes", routes)
 	default:
-		w.Header().Set("Allow", "GET, PUT, POST")
+		w.Header().Set("Allow", "GET, PUT")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}

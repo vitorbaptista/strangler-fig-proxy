@@ -29,17 +29,36 @@ func LoadConfig() (*proxy.Config, error) {
 		Routes:                routes,
 	}
 
-	if config.MainServerURL == "" {
-		return nil, fmt.Errorf("MAIN_SERVER_URL is required")
+	if err := validateServerURL("MAIN_SERVER_URL", config.MainServerURL); err != nil {
+		return nil, err
 	}
-	if config.NewServerURL == "" {
-		return nil, fmt.Errorf("NEW_SERVER_URL is required")
+	if err := validateServerURL("NEW_SERVER_URL", config.NewServerURL); err != nil {
+		return nil, err
 	}
 	if config.SamplingRate < 0 || config.SamplingRate > 1 {
 		return nil, fmt.Errorf("SAMPLING_RATE must be between 0.0 and 1.0, got %v", config.SamplingRate)
 	}
 
 	return config, nil
+}
+
+// validateServerURL fails fast on missing or malformed server URLs instead of
+// letting them fail on every request at runtime.
+func validateServerURL(name, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+	u, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("%s is not a valid URL: %v", name, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%s must use http or https, got %q", name, value)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("%s has no host: %q", name, value)
+	}
+	return nil
 }
 
 // normalizeURL ensures server URLs have an explicit scheme and port so they

@@ -52,7 +52,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	routeToNew := h.routes.ShouldRouteToNew(r.URL.Path)
-	compare := rand.Float64() <= h.config.SamplingRate
+	// Strict < so a rate of 0.0 never samples; rand.Float64() is in [0, 1),
+	// so 1.0 always samples.
+	compare := rand.Float64() < h.config.SamplingRate
 	h.handleProxy(w, r, routeToNew, compare)
 }
 
@@ -246,8 +248,20 @@ var hopByHopHeaders = map[string]bool{
 }
 
 func copyHeaders(dst, src http.Header) {
+	// In addition to the standard set, any header named in the Connection
+	// header is hop-by-hop (RFC 7230 section 6.1).
+	connectionListed := map[string]bool{}
+	for _, value := range src.Values("Connection") {
+		for _, name := range strings.Split(value, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				connectionListed[http.CanonicalHeaderKey(name)] = true
+			}
+		}
+	}
+
 	for key, values := range src {
-		if hopByHopHeaders[http.CanonicalHeaderKey(key)] {
+		canonical := http.CanonicalHeaderKey(key)
+		if hopByHopHeaders[canonical] || connectionListed[canonical] {
 			continue
 		}
 		for _, value := range values {

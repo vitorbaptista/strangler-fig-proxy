@@ -103,3 +103,13 @@ func TestLoadConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadConfigRejectsMalformedURLs(t *testing.T) {
+	t.Setenv("NEW_SERVER_URL", "http://new:8080")
+	for _, bad := range []string{"http://%", "http://"} {
+		t.Setenv("MAIN_SERVER_URL", bad)
+		if _, err := LoadConfig(); err == nil {
+			t.Errorf("expected error for malformed MAIN_SERVER_URL %q", bad)
+		}
+	}
+}
