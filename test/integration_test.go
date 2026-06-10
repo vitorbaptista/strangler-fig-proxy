@@ -2,25 +2,15 @@ package test
 
 import (
 	"bytes"
-	"database/sql"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
-	"strangler-fix-proxy/pkg/proxy"
-
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/vitorbaptista/strangler-fig-proxy/pkg/proxy"
 )
-
-func TestMain(m *testing.M) {
-	os.Exit(m.Run())
-}
 
 func TestBasicProxyFlow(t *testing.T) {
 	mainServer := NewMainServer()
@@ -28,26 +18,10 @@ func TestBasicProxyFlow(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	proxy := setupProxy(t, mainServer.URL, newServer.URL, 1.0)
-	defer proxy.Close()
+	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
 
-	resp, err := http.Get(proxy.URL + "/test")
-	if err != nil {
-		t.Fatalf("Failed to make request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Failed to read response body: %v", err)
-	}
-
-	if !strings.Contains(string(body), `"server": "main"`) {
-		t.Errorf("Expected main server response, got: %s", string(body))
+	if servedBy := getServedBy(t, proxyServer.URL, "/test"); servedBy != "main" {
+		t.Errorf("Expected main server response, got %q", servedBy)
 	}
 }
 
@@ -57,26 +31,17 @@ func TestResponseComparison(t *testing.T) {
 	defer mainServer.Close()
 	defer differentServer.Close()
 
-	dbPath := "/tmp/test_proxy.db"
-	defer os.Remove(dbPath)
+	proxyServer, dbPath := setupProxy(t, mainServer.URL, differentServer.URL, 1.0, nil)
 
-	proxy := setupProxyWithDB(t, mainServer.URL, differentServer.URL, 1.0, dbPath)
-	defer proxy.Close()
-
-	resp, err := http.Get(proxy.URL + "/test")
+	resp, err := http.Get(proxyServer.URL + "/test")
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
-	defer resp.Body.Close()
+	resp.Body.Close()
 
-	time.Sleep(100 * time.Millisecond)
+	waitForLogged(t, dbPath, "/test", 1)
 
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-	defer db.Close()
-
+	db := openDB(t, dbPath)
 	var responsesMatch bool
 	var mismatchType string
 	err = db.QueryRow("SELECT responses_match, mismatch_type FROM requests WHERE url_path = '/test'").Scan(&responsesMatch, &mismatchType)
@@ -87,7 +52,6 @@ func TestResponseComparison(t *testing.T) {
 	if responsesMatch {
 		t.Error("Expected responses to not match")
 	}
-
 	if mismatchType != "body" {
 		t.Errorf("Expected mismatch type 'body', got '%s'", mismatchType)
 	}
@@ -99,11 +63,10 @@ func TestPOSTWithBody(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	proxy := setupProxy(t, mainServer.URL, newServer.URL, 1.0)
-	defer proxy.Close()
+	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
 
 	requestBody := `{"test": "data"}`
-	resp, err := http.Post(proxy.URL+"/api/test", "application/json", strings.NewReader(requestBody))
+	resp, err := http.Post(proxyServer.URL+"/api/test", "application/json", strings.NewReader(requestBody))
 	if err != nil {
 		t.Fatalf("Failed to make POST request: %v", err)
 	}
@@ -117,7 +80,6 @@ func TestPOSTWithBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read response body: %v", err)
 	}
-
 	if !strings.Contains(string(body), `"server": "main"`) {
 		t.Errorf("Expected main server response, got: %s", string(body))
 	}
@@ -129,63 +91,37 @@ func TestNewServerError(t *testing.T) {
 	defer mainServer.Close()
 	defer errorServer.Close()
 
-	proxy := setupProxy(t, mainServer.URL, errorServer.URL, 1.0)
-	defer proxy.Close()
+	proxyServer, _ := setupProxy(t, mainServer.URL, errorServer.URL, 1.0, nil)
 
-	resp, err := http.Get(proxy.URL + "/test")
-	if err != nil {
-		t.Fatalf("Failed to make request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200 (main server response), got %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Failed to read response body: %v", err)
-	}
-
-	if !strings.Contains(string(body), `"server": "main"`) {
-		t.Errorf("Expected main server response, got: %s", string(body))
+	// New server errors must not affect the client's response.
+	if servedBy := getServedBy(t, proxyServer.URL, "/test"); servedBy != "main" {
+		t.Errorf("Expected main server response, got %q", servedBy)
 	}
 }
 
-func TestSamplingRate(t *testing.T) {
+func TestSamplingRateZero(t *testing.T) {
 	mainServer := NewMainServer()
 	newServer := NewNewServer()
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	dbPath := "/tmp/test_proxy_sampling.db"
-	defer os.Remove(dbPath)
-
-	proxy := setupProxyWithDB(t, mainServer.URL, newServer.URL, 0.0, dbPath)
-	defer proxy.Close()
+	proxyServer, dbPath := setupProxy(t, mainServer.URL, newServer.URL, 0.0, nil)
 
 	for i := 0; i < 10; i++ {
-		resp, err := http.Get(proxy.URL + fmt.Sprintf("/test-%d", i))
+		resp, err := http.Get(proxyServer.URL + fmt.Sprintf("/test-%d", i))
 		if err != nil {
 			t.Fatalf("Failed to make request: %v", err)
 		}
 		resp.Body.Close()
 	}
 
-	time.Sleep(100 * time.Millisecond)
-
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-	defer db.Close()
-
+	// With sampling rate 0.0 no logging goroutine is ever started, so the
+	// absence of rows can be asserted immediately.
+	db := openDB(t, dbPath)
 	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM requests").Scan(&count)
-	if err != nil {
+	if err := db.QueryRow("SELECT COUNT(*) FROM requests").Scan(&count); err != nil {
 		t.Fatalf("Failed to query database: %v", err)
 	}
-
 	if count != 0 {
 		t.Errorf("Expected 0 logged requests with sampling rate 0.0, got %d", count)
 	}
@@ -197,10 +133,9 @@ func TestDashboard(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	proxy := setupProxy(t, mainServer.URL, newServer.URL, 1.0)
-	defer proxy.Close()
+	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
 
-	resp, err := http.Get(proxy.URL + "/__strangler_fig")
+	resp, err := http.Get(proxyServer.URL + "/__strangler_fig")
 	if err != nil {
 		t.Fatalf("Failed to make request to dashboard: %v", err)
 	}
@@ -214,7 +149,6 @@ func TestDashboard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read dashboard response: %v", err)
 	}
-
 	if !strings.Contains(string(body), "Strangler Fig Proxy Dashboard") {
 		t.Error("Expected dashboard HTML content")
 	}
@@ -226,57 +160,16 @@ func TestNewServerRouting(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	dbPath := "/tmp/test_proxy_routing.db"
-	defer os.Remove(dbPath)
+	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, []proxy.Route{
+		{Prefix: "/api/v2", Percentage: 100},
+		{Prefix: "/health", Percentage: 100},
+	})
 
-	config := &proxy.Config{
-		MainServerURL:   mainServer.URL,
-		NewServerURL:    newServer.URL,
-		SamplingRate:    1.0,
-		DatabasePath:    dbPath,
-		NewServerRoutes: []string{"/api/v2", "/health"},
+	if servedBy := getServedBy(t, proxyServer.URL, "/api/v2/test"); servedBy != "new" {
+		t.Errorf("Expected new server response for /api/v2, got %q", servedBy)
 	}
-
-	database, err := proxy.InitDatabase(config.DatabasePath)
-	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
-	}
-	defer database.Close()
-
-	proxyHandler := proxy.NewProxyHandler(config, database)
-	proxyServer := httptest.NewServer(proxyHandler)
-	defer proxyServer.Close()
-
-	// Test request to new server route
-	resp, err := http.Get(proxyServer.URL + "/api/v2/test")
-	if err != nil {
-		t.Fatalf("Failed to make request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Failed to read response body: %v", err)
-	}
-
-	if !strings.Contains(string(body), `"server": "new"`) {
-		t.Errorf("Expected new server response for /api/v2, got: %s", string(body))
-	}
-
-	// Test request to main server route
-	resp2, err := http.Get(proxyServer.URL + "/api/v1/test")
-	if err != nil {
-		t.Fatalf("Failed to make request: %v", err)
-	}
-	defer resp2.Body.Close()
-
-	body2, err := io.ReadAll(resp2.Body)
-	if err != nil {
-		t.Fatalf("Failed to read response body: %v", err)
-	}
-
-	if !strings.Contains(string(body2), `"server": "main"`) {
-		t.Errorf("Expected main server response for /api/v1, got: %s", string(body2))
+	if servedBy := getServedBy(t, proxyServer.URL, "/api/v1/test"); servedBy != "main" {
+		t.Errorf("Expected main server response for /api/v1, got %q", servedBy)
 	}
 }
 
@@ -286,36 +179,31 @@ func TestMultipartFormData(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	proxy := setupProxy(t, mainServer.URL, newServer.URL, 1.0)
-	defer proxy.Close()
+	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
 
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	// Add a form field
 	field, err := writer.CreateFormField("username")
 	if err != nil {
 		t.Fatalf("Failed to create form field: %v", err)
 	}
 	field.Write([]byte("testuser"))
 
-	// Add a file field
 	fileField, err := writer.CreateFormFile("file", "test.txt")
 	if err != nil {
 		t.Fatalf("Failed to create file field: %v", err)
 	}
 	fileField.Write([]byte("test file content"))
-
 	writer.Close()
 
-	req, err := http.NewRequest("POST", proxy.URL+"/upload", &buf)
+	req, err := http.NewRequest("POST", proxyServer.URL+"/upload", &buf)
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
@@ -329,7 +217,6 @@ func TestMultipartFormData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read response body: %v", err)
 	}
-
 	if !strings.Contains(string(body), `"server": "main"`) {
 		t.Errorf("Expected main server response, got: %s", string(body))
 	}
@@ -341,16 +228,15 @@ func TestLargeRequestBody(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	proxy := setupProxy(t, mainServer.URL, newServer.URL, 1.0)
-	defer proxy.Close()
+	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
 
-	// Create a large request body (1MB)
+	// 1MB request body
 	largeBody := make([]byte, 1024*1024)
 	for i := range largeBody {
 		largeBody[i] = 'A' + byte(i%26)
 	}
 
-	resp, err := http.Post(proxy.URL+"/large", "text/plain", bytes.NewReader(largeBody))
+	resp, err := http.Post(proxyServer.URL+"/large", "text/plain", bytes.NewReader(largeBody))
 	if err != nil {
 		t.Fatalf("Failed to make POST request: %v", err)
 	}
@@ -364,7 +250,6 @@ func TestLargeRequestBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read response body: %v", err)
 	}
-
 	if !strings.Contains(string(body), `"server": "main"`) {
 		t.Errorf("Expected main server response, got: %s", string(body))
 	}
@@ -376,36 +261,24 @@ func TestQueryStringPreservation(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	dbPath := "/tmp/test_proxy_query.db"
-	defer os.Remove(dbPath)
+	proxyServer, dbPath := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
 
-	proxy := setupProxyWithDB(t, mainServer.URL, newServer.URL, 1.0, dbPath)
-	defer proxy.Close()
-
-	// Make request with complex query string
-	queryURL := proxy.URL + "/api/test?param1=value1&param2=value%202&param3=123&param3=456"
+	queryURL := proxyServer.URL + "/api/test?param1=value1&param2=value%202&param3=123&param3=456"
 	resp, err := http.Get(queryURL)
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
-	defer resp.Body.Close()
+	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitForLogged(t, dbPath, "/api/test", 1)
 
-	// Check database for query string preservation
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-	defer db.Close()
-
+	db := openDB(t, dbPath)
 	var queryParams string
-	err = db.QueryRow("SELECT query_params FROM requests WHERE url_path = '/api/test'").Scan(&queryParams)
-	if err != nil {
+	if err := db.QueryRow("SELECT query_params FROM requests WHERE url_path = '/api/test'").Scan(&queryParams); err != nil {
 		t.Fatalf("Failed to query database: %v", err)
 	}
 
@@ -421,18 +294,16 @@ func TestFormDataContentType(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	proxy := setupProxy(t, mainServer.URL, newServer.URL, 1.0)
-	defer proxy.Close()
+	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
 
 	formData := "username=testuser&password=testpass"
-	req, err := http.NewRequest("POST", proxy.URL+"/login", strings.NewReader(formData))
+	req, err := http.NewRequest("POST", proxyServer.URL+"/login", strings.NewReader(formData))
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
@@ -446,7 +317,6 @@ func TestFormDataContentType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read response body: %v", err)
 	}
-
 	if !strings.Contains(string(body), `"server": "main"`) {
 		t.Errorf("Expected main server response, got: %s", string(body))
 	}
@@ -456,11 +326,9 @@ func TestMainServerUnavailable(t *testing.T) {
 	newServer := NewNewServer()
 	defer newServer.Close()
 
-	// Use a non-existent server URL for main server
-	proxy := setupProxy(t, "http://localhost:99999", newServer.URL, 1.0)
-	defer proxy.Close()
+	proxyServer, _ := setupProxy(t, "http://localhost:1", newServer.URL, 1.0, nil)
 
-	resp, err := http.Get(proxy.URL + "/test")
+	resp, err := http.Get(proxyServer.URL + "/test")
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
@@ -472,11 +340,9 @@ func TestMainServerUnavailable(t *testing.T) {
 }
 
 func TestBothServersUnavailable(t *testing.T) {
-	// Use non-existent server URLs for both servers
-	proxy := setupProxy(t, "http://localhost:99999", "http://localhost:99998", 1.0)
-	defer proxy.Close()
+	proxyServer, _ := setupProxy(t, "http://localhost:1", "http://localhost:2", 1.0, nil)
 
-	resp, err := http.Get(proxy.URL + "/test")
+	resp, err := http.Get(proxyServer.URL + "/test")
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
@@ -487,34 +353,77 @@ func TestBothServersUnavailable(t *testing.T) {
 	}
 }
 
-func setupProxy(t *testing.T, mainURL, newURL string, samplingRate float64) *httptest.Server {
-	return setupProxyWithDB(t, mainURL, newURL, samplingRate, "/tmp/test_proxy_default.db")
-}
+func TestHopByHopHeadersNotForwarded(t *testing.T) {
+	// The handler runs in the server's goroutine; a channel gives the test a
+	// happens-before edge on the captured value (avoids a data race).
+	received := make(chan string, 4)
+	upstream := NewHeaderCapturingServer(func(h http.Header) {
+		received <- h.Get("Keep-Alive")
+	})
+	defer upstream.Close()
+	newServer := NewNewServer()
+	defer newServer.Close()
 
-func setupProxyWithDB(t *testing.T, mainURL, newURL string, samplingRate float64, dbPath string) *httptest.Server {
-	os.Remove(dbPath)
+	proxyServer, _ := setupProxy(t, upstream.URL, newServer.URL, 1.0, nil)
 
-	os.Setenv("MAIN_SERVER_URL", mainURL)
-	os.Setenv("NEW_SERVER_URL", newURL)
-	os.Setenv("SAMPLING_RATE", fmt.Sprintf("%.1f", samplingRate))
-	os.Setenv("DATABASE_PATH", dbPath)
-
-	config := &proxy.Config{
-		MainServerURL: mainURL,
-		NewServerURL:  newURL,
-		SamplingRate:  samplingRate,
-		DatabasePath:  dbPath,
-	}
-
-	database, err := proxy.InitDatabase(config.DatabasePath)
+	req, _ := http.NewRequest("GET", proxyServer.URL+"/test", nil)
+	req.Header.Set("Keep-Alive", "timeout=5")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
+		t.Fatalf("Failed to make request: %v", err)
 	}
+	resp.Body.Close()
 
-	proxyHandler := proxy.NewProxyHandler(config, database)
-
-	return httptest.NewServer(proxyHandler)
+	if got := <-received; got != "" {
+		t.Errorf("Expected hop-by-hop Keep-Alive header to be stripped, upstream received %q", got)
+	}
 }
 
-// Import the main package types and functions
-// This file uses the main package's types to avoid duplication
+func TestXForwardedForSet(t *testing.T) {
+	received := make(chan string, 4)
+	upstream := NewHeaderCapturingServer(func(h http.Header) {
+		received <- h.Get("X-Forwarded-For")
+	})
+	defer upstream.Close()
+	newServer := NewNewServer()
+	defer newServer.Close()
+
+	proxyServer, _ := setupProxy(t, upstream.URL, newServer.URL, 1.0, nil)
+
+	resp, err := http.Get(proxyServer.URL + "/test")
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	resp.Body.Close()
+
+	if got := <-received; got == "" {
+		t.Error("Expected X-Forwarded-For to be set on the upstream request")
+	}
+}
+
+func TestConnectionListedHeadersNotForwarded(t *testing.T) {
+	received := make(chan string, 4)
+	upstream := NewHeaderCapturingServer(func(h http.Header) {
+		received <- h.Get("X-Drop-Me")
+	})
+	defer upstream.Close()
+	newServer := NewNewServer()
+	defer newServer.Close()
+
+	proxyServer, _ := setupProxy(t, upstream.URL, newServer.URL, 1.0, nil)
+
+	// Headers named in the Connection header are hop-by-hop (RFC 7230 6.1)
+	// even when they are not in the standard set.
+	req, _ := http.NewRequest("GET", proxyServer.URL+"/test", nil)
+	req.Header.Set("Connection", "X-Drop-Me")
+	req.Header.Set("X-Drop-Me", "secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	resp.Body.Close()
+
+	if got := <-received; got != "" {
+		t.Errorf("Expected Connection-listed header to be stripped, upstream received %q", got)
+	}
+}

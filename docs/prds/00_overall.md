@@ -76,7 +76,7 @@ Client Request → Strangler Fig Proxy → Main Server (returns response)
   - Response time comparisons
   - Filter by URL pattern, time range, match status
 - **FR-5.3**: Diff viewer for response comparisons
-- **FR-5.4**: No authentication required (internal use only)
+- **FR-5.4**: No authentication required by default (internal use only); an optional `DASHBOARD_AUTH_TOKEN` gates the dashboard and APIs for non-isolated deployments
 
 ## 4. Non-Functional Requirements
 
@@ -214,16 +214,28 @@ Given the proxy nature of the system, integration tests will be the primary test
 - Internal web interface at `/__strangler_fig`
 - Basic statistics and mismatch viewing
 
-### Phase 3: Advanced Routing (pending)
+### Phase 3: Advanced Routing
 - URL pattern-based routing to new server
-- Configuration hot-reload
-- Percentage-based traffic splitting
+- Percentage-based traffic splitting per route prefix (`NEW_SERVER_ROUTES=/api/v2=25`)
+- Runtime routing table updates via `/__strangler_fig/api/routes` (GET/PUT) and the dashboard, no restart required
+- Automatic fallback to the main server when a request routed to the new server fails
+- `served_by` tracking and migration progress stat in the dashboard
 
-### Phase 4: Production Hardening (pending)
-- Metrics and monitoring
-- Performance optimizations
-- Database maintenance tasks
-- Response transformation capabilities
+### Phase 4: Production Hardening (in progress)
+- Database maintenance tasks: hourly enforcement of `DATABASE_RETENTION_DAYS` and `DATABASE_MAX_SIZE_MB` (done)
+- Per-path statistics in the dashboard: counts, match %, traffic split, avg response times (done)
+- Response diff viewer at `/__strangler_fig/requests/{id}` with side-by-side line diff, JSON pretty-printed before diffing (done)
+- Structured JSON logging via log/slog (done)
+- Proxy correctness: hop-by-hop headers stripped, X-Forwarded-For/Host/Proto set, shared HTTP transport with connection pooling, comparison request mirrored in the background (done)
+- Response transformation capabilities (pending)
+
+### Phase 5: Agent-Driven Migration (in progress)
+- JSON stats API at `/__strangler_fig/api/stats`: overall progress, routing table, per-path work queue (done)
+- Request records API at `/__strangler_fig/api/requests`: recorded request/response pairs filterable by path, match result, method (done)
+- Hurl test-suite export at `/__strangler_fig/api/tests.hurl`: recorded GET/HEAD traffic as runnable regression tests asserting legacy behavior; JSON bodies flattened to structural jsonpath asserts, other bodies byte-exact (done)
+- Write-endpoint verification strategy (pending; candidates: DB-call instrumentation comparison, transaction dry-runs, shadow databases)
+- Auto-promotion/rollback policy in the proxy (pending)
+- Packaged agent runner + CLI (pending)
 
 ## 8. Success Criteria
 

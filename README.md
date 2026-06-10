@@ -1,6 +1,6 @@
 # Strangler Fig Reverse Proxy
 
-[![Test](https://github.com/vitorbaptista/strangler-fix-proxy/actions/workflows/test.yml/badge.svg)](https://github.com/vitorbaptista/strangler-fix-proxy/actions/workflows/test.yml)
+[![Test](https://github.com/vitorbaptista/strangler-fig-proxy/actions/workflows/test.yml/badge.svg)](https://github.com/vitorbaptista/strangler-fig-proxy/actions/workflows/test.yml)
 
 A reverse proxy designed for zero-downtime migration between service versions using the strangler fig pattern. Routes requests to both legacy and new systems, compares responses, and provides visibility into behavioral differences.
 
@@ -21,7 +21,7 @@ A reverse proxy designed for zero-downtime migration between service versions us
 docker run -p 8080:8080 \
   -e MAIN_SERVER_URL=http://legacy-service:8080 \
   -e NEW_SERVER_URL=http://new-service:8080 \
-  strangler-fix-proxy
+  strangler-fig-proxy
 ```
 
 ### Option 2: Build from Source
@@ -33,7 +33,7 @@ docker run -p 8080:8080 \
 #### Installation
 ```bash
 git clone <repository-url>
-cd strangler-fix-proxy
+cd strangler-fig-proxy
 make build
 ```
 
@@ -41,7 +41,7 @@ make build
 ```bash
 export MAIN_SERVER_URL=http://legacy-service:8080
 export NEW_SERVER_URL=http://new-service:8080
-./bin/strangler-fix-proxy
+./bin/strangler-fig-proxy
 ```
 
 ### Quick Demo
@@ -64,7 +64,8 @@ make run-example
 | `DATABASE_PATH` | SQLite database file path | `./strangler_fig.db` |
 | `DATABASE_MAX_SIZE_MB` | Maximum database size | `1000` |
 | `DATABASE_RETENTION_DAYS` | Data retention period | `7` |
-| `NEW_SERVER_ROUTES` | Comma-separated URL prefixes to route to new server | - |
+| `NEW_SERVER_ROUTES` | Comma-separated URL prefixes to route to new server, optionally with a traffic percentage (`/api/v2=25`) | - |
+| `DASHBOARD_AUTH_TOKEN` | When set, the dashboard and `/__strangler_fig` APIs require this token (`Authorization: Bearer <token>` or `?token=`) | - |
 
 ### Example Configuration
 ```bash
@@ -72,7 +73,8 @@ export MAIN_SERVER_URL=http://legacy-api:8080
 export NEW_SERVER_URL=http://new-api:8080
 export PORT=8080
 export SAMPLING_RATE=0.1
-export NEW_SERVER_ROUTES=/api/v2,/health
+# /api/v2: 25% of traffic served by the new server; /health: 100%
+export NEW_SERVER_ROUTES=/api/v2=25,/health
 ```
 
 ## How It Works
@@ -87,7 +89,64 @@ export NEW_SERVER_ROUTES=/api/v2,/health
 ### Routing Logic
 - **Default**: Returns main server response, logs comparison with new server
 - **With `NEW_SERVER_ROUTES`**: For matching URL prefixes, returns new server response and logs comparison with main server
+- **Percentage splitting**: A route like `/api/v2=25` serves 25% of matching requests from the new server and the rest from the main server, so traffic can be shifted gradually as confidence grows
+- **Fallback**: If a request routed to the new server fails, the proxy transparently serves the main server's response instead
 - **Sampling**: Only logs the configured percentage of requests to reduce overhead
+
+### Gradual Migration Workflow
+
+1. Deploy the proxy in front of your existing app with no routes configured. All traffic is served by the old app while every response is compared against the new one.
+2. Watch the dashboard until a path's responses consistently match.
+3. Start shifting traffic for that path: `/api/users=10`, then `25`, `50`, `100` — either via `NEW_SERVER_ROUTES` or live through the dashboard / routes API (no restart needed).
+4. Repeat per path until the new app serves 100% of traffic, then remove the proxy and the old codebase.
+
+#### Routes API
+
+The routing table can be inspected and changed at runtime:
+
+```bash
+# View current routes
+curl http://localhost:8080/__strangler_fig/api/routes
+
+# Serve 50% of /api/v2 traffic from the new server, 100% of /health
+curl -X PUT http://localhost:8080/__strangler_fig/api/routes \
+  -H 'Content-Type: application/json' \
+  -d '[{"prefix": "/api/v2", "percentage": 50}, {"prefix": "/health", "percentage": 100}]'
+```
+
+### Agent-Driven Migration
+
+The proxy exposes machine-readable APIs so a coding agent (or script) can
+drive the rewrite loop autonomously:
+
+```bash
+# Overall progress, routing table, and per-path work queue in one call
+curl http://localhost:8080/__strangler_fig/api/stats
+
+# Recorded request/response pairs - mismatches are reproduction cases
+curl 'http://localhost:8080/__strangler_fig/api/requests?path=/api/users&match=false&limit=10'
+
+# Export recorded read traffic (GET/HEAD) as a Hurl test suite
+curl 'http://localhost:8080/__strangler_fig/api/tests.hurl?path=/api/users' > tests.hurl
+```
+
+The exported suite asserts the legacy server's observed behavior and runs
+against any deployment of the new app with [Hurl](https://hurl.dev):
+
+```bash
+hurl --test --variable base_url=http://localhost:8082 tests.hurl
+```
+
+JSON responses are asserted field by field (key order and formatting don't
+matter, mirroring the proxy's own comparison); other responses are asserted
+byte-exactly. Commit the generated files to the new app's repo and they
+become its regression suite, runnable locally and in CI.
+
+The agent loop: pick the worst path from `/api/stats`, study its mismatches
+via `/api/requests`, implement the endpoint, verify locally with the Hurl
+suite, deploy, watch fresh comparisons, then raise the route percentage via
+`/api/routes`. Only read endpoints are exported as tests; write endpoints
+need a side-effect-aware strategy and a deliberate cutover.
 
 ## Dashboard
 
@@ -98,15 +157,17 @@ http://localhost:8080/__strangler_fig
 
 View:
 - Request statistics and match/mismatch ratios
-- Recent response differences
+- Migration progress (% of traffic served by the new server)
+- Per-path statistics: request counts, match %, traffic split, and average response times for each path — so you can see which paths are safe to migrate
+- Recent requests, each linking to a detail page with a side-by-side response diff (JSON bodies are pretty-printed before diffing)
 - Response time metrics
-- Database location and basic info
+- Live routing table editor — change traffic percentages without restarting
 
 ## Docker Usage
 
 ### Build Docker Image
 ```bash
-docker build -t strangler-fix-proxy .
+docker build -t strangler-fig-proxy .
 ```
 
 ### Run with Docker
@@ -117,7 +178,7 @@ docker run -p 8080:8080 \
   -e SAMPLING_RATE=0.1 \
   -v $(pwd)/data:/app/data \
   -e DATABASE_PATH=/app/data/strangler_fig.db \
-  strangler-fix-proxy
+  strangler-fig-proxy
 ```
 
 ### Docker Compose Example
@@ -125,7 +186,7 @@ docker run -p 8080:8080 \
 version: '3.8'
 services:
   strangler-proxy:
-    image: strangler-fix-proxy
+    image: strangler-fig-proxy
     ports:
       - "8080:8080"
     environment:
@@ -156,10 +217,10 @@ make deps           # Download dependencies
 go mod download
 
 # Build for current platform
-go build -o bin/strangler-fix-proxy ./cmd/strangler-fix-proxy
+go build -o bin/strangler-fig-proxy ./cmd/strangler-fig-proxy
 
 # Build for production (Linux)
-CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o bin/strangler-fix-proxy ./cmd/strangler-fix-proxy
+CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o bin/strangler-fig-proxy ./cmd/strangler-fig-proxy
 ```
 
 ## Testing
@@ -176,7 +237,7 @@ go test -v ./test/... -run TestBasicProxyFlow
 
 ### Test Coverage
 ```bash
-go test -cover ./test/...
+go test -cover ./...
 ```
 
 ## Use Cases

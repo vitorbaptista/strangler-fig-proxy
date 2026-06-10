@@ -2,15 +2,15 @@
 
 # Build the proxy binary
 build:
-	go build -o bin/strangler-fix-proxy ./cmd/strangler-fix-proxy
+	go build -o bin/strangler-fig-proxy ./cmd/strangler-fig-proxy
 
 # Run tests
 test:
-	go test -v ./test/...
+	go test -race -v ./...
 
 # Run the proxy with default settings
 run:
-	go run ./cmd/strangler-fix-proxy
+	go run ./cmd/strangler-fig-proxy
 
 # Clean build artifacts
 clean:
@@ -31,15 +31,15 @@ run-example:
 	NEW_SERVER_URL=http://httpbin.org \
 	SAMPLING_RATE=1.0 \
 	PORT=8080 \
-	go run ./cmd/strangler-fix-proxy
+	go run ./cmd/strangler-fig-proxy
 
 # Build for production
 build-prod:
-	CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o bin/strangler-fix-proxy ./cmd/strangler-fix-proxy
+	CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o bin/strangler-fig-proxy ./cmd/strangler-fig-proxy
 
 # Docker targets
 docker-build:
-	docker build -t strangler-fix-proxy:latest .
+	docker build -t strangler-fig-proxy:latest .
 
 docker-run:
 	docker run -p 8080:8080 \
@@ -47,17 +47,17 @@ docker-run:
 		-e NEW_SERVER_URL=http://host.docker.internal:8082 \
 		-e SAMPLING_RATE=1.0 \
 		-v $(PWD)/data:/app/data \
-		strangler-fix-proxy:latest
+		strangler-fig-proxy:latest
 
 docker-run-example:
 	docker run -p 8080:8080 \
 		-e MAIN_SERVER_URL=http://httpbin.org \
 		-e NEW_SERVER_URL=http://httpbin.org \
 		-e SAMPLING_RATE=1.0 \
-		strangler-fix-proxy:latest
+		strangler-fig-proxy:latest
 
 docker-stop:
-	docker stop $$(docker ps -q --filter ancestor=strangler-fix-proxy:latest)
+	docker stop $$(docker ps -q --filter ancestor=strangler-fig-proxy:latest)
 
 docker-clean:
-	docker rmi strangler-fix-proxy:latest
+	docker rmi strangler-fig-proxy:latest
