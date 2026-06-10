@@ -3,8 +3,7 @@ package proxy
 import (
 	"database/sql"
 	"encoding/json"
-	"html/template"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -105,7 +104,7 @@ func pairwiseDiff(mainLines, newLines []string) []DiffLine {
 	return lines
 }
 
-func (p *ProxyHandler) handleRequestDetail(w http.ResponseWriter, r *http.Request, idStr string) {
+func (h *Handler) handleRequestDetail(w http.ResponseWriter, r *http.Request, idStr string) {
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
@@ -115,7 +114,7 @@ func (p *ProxyHandler) handleRequestDetail(w http.ResponseWriter, r *http.Reques
 	var record RequestRecord
 	var timestamp, queryParams, mismatchType, servedBy sql.NullString
 	var responsesMatch sql.NullBool
-	err = p.database.db.QueryRow(`
+	err = h.database.db.QueryRow(`
 		SELECT timestamp, method, url_path, query_params, request_headers, request_body,
 		       main_status, main_headers, main_body, main_response_time_ms,
 		       new_status, new_headers, new_body, new_response_time_ms,
@@ -132,6 +131,7 @@ func (p *ProxyHandler) handleRequestDetail(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err != nil {
+		slog.Error("failed to query request detail", "id", id, "error", err)
 		http.Error(w, "failed to query request", http.StatusInternalServerError)
 		return
 	}
@@ -151,59 +151,8 @@ func (p *ProxyHandler) handleRequestDetail(w http.ResponseWriter, r *http.Reques
 		Diff:      DiffBodies(record.MainBody, record.NewBody),
 	}
 
-	tmpl, err := template.New("detail").Parse(detailTemplate)
-	if err != nil {
-		http.Error(w, "template parse error", http.StatusInternalServerError)
-		return
-	}
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.Execute(w, data); err != nil {
-		log.Printf("Error rendering request detail: %v", err)
+	if err := templates.ExecuteTemplate(w, "detail.html", data); err != nil {
+		slog.Error("failed to render request detail", "id", id, "error", err)
 	}
 }
-
-const detailTemplate = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Request {{.Record.ID}} - Strangler Fig Proxy</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 2rem; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { padding: .25rem .75rem; border-bottom: 1px solid #ddd; text-align: left; vertical-align: top; }
-    .diff td { font-family: ui-monospace, monospace; font-size: .85rem; white-space: pre-wrap; word-break: break-all; width: 50%; }
-    tr.differs { background: #f8d1d1; }
-    .match    { color: #1a7f37; }
-    .mismatch { color: #cf222e; }
-  </style>
-</head>
-<body>
-  <p><a href="/__strangler_fig">&larr; Back to dashboard</a></p>
-  <h1>Request {{.Record.ID}}: {{.Record.Method}} {{.Record.URLPath}}</h1>
-
-  <table>
-    <tr><th>Timestamp</th><td>{{.Timestamp}}</td></tr>
-    {{if .Record.QueryParams}}<tr><th>Query</th><td>{{.Record.QueryParams}}</td></tr>{{end}}
-    <tr><th>Result</th><td>{{if .Record.ResponsesMatch}}<span class="match">match</span>{{else}}<span class="mismatch">mismatch{{if .Record.MismatchType}} ({{.Record.MismatchType}}){{end}}</span>{{end}}</td></tr>
-    <tr><th>Served by</th><td>{{if .Record.ServedBy}}{{.Record.ServedBy}}{{else}}&mdash;{{end}}</td></tr>
-    <tr><th>Main server</th><td>status {{.Record.MainStatus}}, {{.Record.MainResponseTimeMs}} ms</td></tr>
-    <tr><th>New server</th><td>status {{.Record.NewStatus}}, {{.Record.NewResponseTimeMs}} ms</td></tr>
-  </table>
-
-  {{if .Record.RequestBody}}
-  <h2>Request body</h2>
-  <table class="diff"><tr><td>{{.Record.RequestBody}}</td></tr></table>
-  {{end}}
-
-  <h2>Response bodies</h2>
-  <table class="diff">
-    <thead><tr><th>Main server</th><th>New server</th></tr></thead>
-    <tbody>
-      {{range .Diff}}
-        <tr{{if .Differs}} class="differs"{{end}}><td>{{.Main}}</td><td>{{.New}}</td></tr>
-      {{end}}
-    </tbody>
-  </table>
-</body>
-</html>`

@@ -1,6 +1,6 @@
 # Strangler Fig Reverse Proxy
 
-[![Test](https://github.com/vitorbaptista/strangler-fix-proxy/actions/workflows/test.yml/badge.svg)](https://github.com/vitorbaptista/strangler-fix-proxy/actions/workflows/test.yml)
+[![Test](https://github.com/vitorbaptista/strangler-fig-proxy/actions/workflows/test.yml/badge.svg)](https://github.com/vitorbaptista/strangler-fig-proxy/actions/workflows/test.yml)
 
 A reverse proxy designed for zero-downtime migration between service versions using the strangler fig pattern. Routes requests to both legacy and new systems, compares responses, and provides visibility into behavioral differences.
 
@@ -21,7 +21,7 @@ A reverse proxy designed for zero-downtime migration between service versions us
 docker run -p 8080:8080 \
   -e MAIN_SERVER_URL=http://legacy-service:8080 \
   -e NEW_SERVER_URL=http://new-service:8080 \
-  strangler-fix-proxy
+  strangler-fig-proxy
 ```
 
 ### Option 2: Build from Source
@@ -33,7 +33,7 @@ docker run -p 8080:8080 \
 #### Installation
 ```bash
 git clone <repository-url>
-cd strangler-fix-proxy
+cd strangler-fig-proxy
 make build
 ```
 
@@ -41,7 +41,7 @@ make build
 ```bash
 export MAIN_SERVER_URL=http://legacy-service:8080
 export NEW_SERVER_URL=http://new-service:8080
-./bin/strangler-fix-proxy
+./bin/strangler-fig-proxy
 ```
 
 ### Quick Demo
@@ -132,7 +132,7 @@ View:
 
 ### Build Docker Image
 ```bash
-docker build -t strangler-fix-proxy .
+docker build -t strangler-fig-proxy .
 ```
 
 ### Run with Docker
@@ -143,7 +143,7 @@ docker run -p 8080:8080 \
   -e SAMPLING_RATE=0.1 \
   -v $(pwd)/data:/app/data \
   -e DATABASE_PATH=/app/data/strangler_fig.db \
-  strangler-fix-proxy
+  strangler-fig-proxy
 ```
 
 ### Docker Compose Example
@@ -151,7 +151,7 @@ docker run -p 8080:8080 \
 version: '3.8'
 services:
   strangler-proxy:
-    image: strangler-fix-proxy
+    image: strangler-fig-proxy
     ports:
       - "8080:8080"
     environment:
@@ -182,10 +182,10 @@ make deps           # Download dependencies
 go mod download
 
 # Build for current platform
-go build -o bin/strangler-fix-proxy ./cmd/strangler-fix-proxy
+go build -o bin/strangler-fig-proxy ./cmd/strangler-fig-proxy
 
 # Build for production (Linux)
-CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o bin/strangler-fix-proxy ./cmd/strangler-fix-proxy
+CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o bin/strangler-fig-proxy ./cmd/strangler-fig-proxy
 ```
 
 ## Testing
@@ -202,7 +202,7 @@ go test -v ./test/... -run TestBasicProxyFlow
 
 ### Test Coverage
 ```bash
-go test -cover ./test/...
+go test -cover ./...
 ```
 
 ## Use Cases

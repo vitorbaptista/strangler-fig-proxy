@@ -17,7 +17,7 @@ RUN go mod download
 COPY . .
 
 # Build the application with CGO enabled for SQLite
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o strangler-fix-proxy ./cmd/strangler-fix-proxy
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o strangler-fig-proxy ./cmd/strangler-fig-proxy
 
 # Final stage - minimal runtime image
 FROM alpine:latest
@@ -33,7 +33,7 @@ RUN addgroup -g 1001 -S appgroup && \
 WORKDIR /app
 
 # Copy binary from builder stage
-COPY --from=builder /app/strangler-fix-proxy .
+COPY --from=builder /app/strangler-fig-proxy .
 
 # Create directory for database and logs
 RUN mkdir -p /app/data && \
@@ -55,4 +55,4 @@ ENV PORT=8080
 ENV SAMPLING_RATE=1.0
 
 # Run the application
-CMD ["./strangler-fix-proxy"]
+CMD ["./strangler-fig-proxy"]

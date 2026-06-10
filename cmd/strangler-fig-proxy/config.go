@@ -1,19 +1,21 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 
-	"strangler-fix-proxy/pkg/proxy"
+	"github.com/vitorbaptista/strangler-fig-proxy/pkg/proxy"
 )
 
-func LoadConfig() *proxy.Config {
+// LoadConfig builds the proxy configuration from environment variables and
+// validates the required fields.
+func LoadConfig() (*proxy.Config, error) {
 	routes, err := proxy.ParseRoutes(getEnv("NEW_SERVER_ROUTES", ""))
 	if err != nil {
-		log.Fatalf("Invalid NEW_SERVER_ROUTES: %v", err)
+		return nil, fmt.Errorf("invalid NEW_SERVER_ROUTES: %w", err)
 	}
 
 	config := &proxy.Config{
@@ -27,7 +29,17 @@ func LoadConfig() *proxy.Config {
 		Routes:                routes,
 	}
 
-	return config
+	if config.MainServerURL == "" {
+		return nil, fmt.Errorf("MAIN_SERVER_URL is required")
+	}
+	if config.NewServerURL == "" {
+		return nil, fmt.Errorf("NEW_SERVER_URL is required")
+	}
+	if config.SamplingRate < 0 || config.SamplingRate > 1 {
+		return nil, fmt.Errorf("SAMPLING_RATE must be between 0.0 and 1.0, got %v", config.SamplingRate)
+	}
+
+	return config, nil
 }
 
 // normalizeURL ensures server URLs have an explicit scheme and port so they
@@ -80,13 +92,6 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 		if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
 			return floatValue
 		}
-	}
-	return defaultValue
-}
-
-func getEnvSlice(key string, defaultValue []string) []string {
-	if value := os.Getenv(key); value != "" {
-		return strings.Split(value, ",")
 	}
 	return defaultValue
 }

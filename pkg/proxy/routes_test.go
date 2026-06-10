@@ -86,31 +86,81 @@ func TestParseRoutes(t *testing.T) {
 	}
 }
 
-func TestShouldRouteToNewServerPercentages(t *testing.T) {
+func TestRouteTableMatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		routes      []Route
+		path        string
+		expectMatch bool
+	}{
+		{
+			name:        "empty table matches nothing",
+			routes:      nil,
+			path:        "/api/v1/test",
+			expectMatch: false,
+		},
+		{
+			name:        "matching prefix",
+			routes:      []Route{{Prefix: "/api/v2", Percentage: 100}},
+			path:        "/api/v2/users",
+			expectMatch: true,
+		},
+		{
+			name:        "non-matching prefix",
+			routes:      []Route{{Prefix: "/api/v2", Percentage: 100}},
+			path:        "/api/v1/users",
+			expectMatch: false,
+		},
+		{
+			name:        "exact match",
+			routes:      []Route{{Prefix: "/health", Percentage: 100}},
+			path:        "/health",
+			expectMatch: true,
+		},
+		{
+			name:        "root prefix matches everything",
+			routes:      []Route{{Prefix: "/", Percentage: 100}},
+			path:        "/anything",
+			expectMatch: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			table := NewRouteTable(tt.routes)
+			_, ok := table.Match(tt.path)
+			if ok != tt.expectMatch {
+				t.Errorf("Match(%q) = %v, expected %v", tt.path, ok, tt.expectMatch)
+			}
+		})
+	}
+}
+
+func TestRouteTableShouldRouteToNew(t *testing.T) {
 	t.Run("0% never routes to new server", func(t *testing.T) {
-		config := &Config{Routes: []Route{{Prefix: "/api", Percentage: 0}}}
+		table := NewRouteTable([]Route{{Prefix: "/api", Percentage: 0}})
 		for i := 0; i < 200; i++ {
-			if config.ShouldRouteToNewServer("/api/users") {
+			if table.ShouldRouteToNew("/api/users") {
 				t.Fatal("expected 0% route to never go to new server")
 			}
 		}
 	})
 
 	t.Run("100% always routes to new server", func(t *testing.T) {
-		config := &Config{Routes: []Route{{Prefix: "/api", Percentage: 100}}}
+		table := NewRouteTable([]Route{{Prefix: "/api", Percentage: 100}})
 		for i := 0; i < 200; i++ {
-			if !config.ShouldRouteToNewServer("/api/users") {
+			if !table.ShouldRouteToNew("/api/users") {
 				t.Fatal("expected 100% route to always go to new server")
 			}
 		}
 	})
 
 	t.Run("50% routes roughly half of traffic", func(t *testing.T) {
-		config := &Config{Routes: []Route{{Prefix: "/api", Percentage: 50}}}
+		table := NewRouteTable([]Route{{Prefix: "/api", Percentage: 50}})
 		newCount := 0
 		const trials = 2000
 		for i := 0; i < trials; i++ {
-			if config.ShouldRouteToNewServer("/api/users") {
+			if table.ShouldRouteToNew("/api/users") {
 				newCount++
 			}
 		}
@@ -121,50 +171,44 @@ func TestShouldRouteToNewServerPercentages(t *testing.T) {
 	})
 
 	t.Run("non-matching path never routes", func(t *testing.T) {
-		config := &Config{Routes: []Route{{Prefix: "/api", Percentage: 100}}}
-		if config.ShouldRouteToNewServer("/other") {
+		table := NewRouteTable([]Route{{Prefix: "/api", Percentage: 100}})
+		if table.ShouldRouteToNew("/other") {
 			t.Error("expected non-matching path to stay on main server")
 		}
 	})
 }
 
-func TestSetRoutes(t *testing.T) {
-	config := &Config{NewServerRoutes: []string{"/legacy"}}
+func TestRouteTableSet(t *testing.T) {
+	table := NewRouteTable([]Route{{Prefix: "/old", Percentage: 100}})
 
-	// Legacy routes are exposed as 100% routes.
-	expected := []Route{{Prefix: "/legacy", Percentage: 100}}
-	if got := config.GetRoutes(); !reflect.DeepEqual(got, expected) {
-		t.Errorf("GetRoutes() = %v, expected %v", got, expected)
-	}
-
-	// Replacing the table takes effect immediately and supersedes legacy routes.
+	// Replacing the table takes effect immediately.
 	newRoutes := []Route{{Prefix: "/api/v2", Percentage: 50}}
-	if err := config.SetRoutes(newRoutes); err != nil {
-		t.Fatalf("SetRoutes() unexpected error: %v", err)
+	if err := table.Set(newRoutes); err != nil {
+		t.Fatalf("Set() unexpected error: %v", err)
 	}
-	if got := config.GetRoutes(); !reflect.DeepEqual(got, newRoutes) {
-		t.Errorf("GetRoutes() = %v, expected %v", got, newRoutes)
+	if got := table.Routes(); !reflect.DeepEqual(got, newRoutes) {
+		t.Errorf("Routes() = %v, expected %v", got, newRoutes)
 	}
-	if config.ShouldRouteToNewServer("/legacy/thing") {
-		t.Error("expected legacy route to be removed after SetRoutes")
+	if table.ShouldRouteToNew("/old/thing") {
+		t.Error("expected old route to be removed after Set")
 	}
 
 	// Invalid routes are rejected and leave the table unchanged.
-	if err := config.SetRoutes([]Route{{Prefix: "bad", Percentage: 50}}); err == nil {
+	if err := table.Set([]Route{{Prefix: "bad", Percentage: 50}}); err == nil {
 		t.Error("expected error for prefix without leading slash")
 	}
-	if err := config.SetRoutes([]Route{{Prefix: "/ok", Percentage: 101}}); err == nil {
+	if err := table.Set([]Route{{Prefix: "/ok", Percentage: 101}}); err == nil {
 		t.Error("expected error for percentage above 100")
 	}
-	if got := config.GetRoutes(); !reflect.DeepEqual(got, newRoutes) {
-		t.Errorf("GetRoutes() after rejected update = %v, expected %v", got, newRoutes)
+	if got := table.Routes(); !reflect.DeepEqual(got, newRoutes) {
+		t.Errorf("Routes() after rejected update = %v, expected %v", got, newRoutes)
 	}
 
 	// Clearing the table disables routing entirely.
-	if err := config.SetRoutes(nil); err != nil {
-		t.Fatalf("SetRoutes(nil) unexpected error: %v", err)
+	if err := table.Set(nil); err != nil {
+		t.Fatalf("Set(nil) unexpected error: %v", err)
 	}
-	if config.ShouldRouteToNewServer("/api/v2/users") {
+	if table.ShouldRouteToNew("/api/v2/users") {
 		t.Error("expected no routing after clearing the table")
 	}
 }

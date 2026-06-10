@@ -2,70 +2,15 @@ package test
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"strangler-fix-proxy/pkg/proxy"
-
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/vitorbaptista/strangler-fig-proxy/pkg/proxy"
 )
-
-func setupRoutingProxy(t *testing.T, mainURL, newURL, dbPath string, routes []proxy.Route) (*httptest.Server, *proxy.Config) {
-	t.Helper()
-	os.Remove(dbPath)
-
-	config := &proxy.Config{
-		MainServerURL: mainURL,
-		NewServerURL:  newURL,
-		SamplingRate:  1.0,
-		DatabasePath:  dbPath,
-		Routes:        routes,
-	}
-
-	database, err := proxy.InitDatabase(config.DatabasePath)
-	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
-	}
-	t.Cleanup(func() {
-		database.Close()
-		os.Remove(dbPath)
-	})
-
-	server := httptest.NewServer(proxy.NewProxyHandler(config, database))
-	t.Cleanup(server.Close)
-	return server, config
-}
-
-func getServedBy(t *testing.T, proxyURL, path string) string {
-	t.Helper()
-	resp, err := http.Get(proxyURL + path)
-	if err != nil {
-		t.Fatalf("Failed to make request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Failed to read response body: %v", err)
-	}
-
-	switch {
-	case strings.Contains(string(body), `"server": "main"`):
-		return "main"
-	case strings.Contains(string(body), `"server": "new"`):
-		return "new"
-	default:
-		t.Fatalf("Unexpected response body: %s", string(body))
-		return ""
-	}
-}
 
 func TestPercentageRouting(t *testing.T) {
 	mainServer := NewMainServer()
@@ -73,11 +18,10 @@ func TestPercentageRouting(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	proxyServer, _ := setupRoutingProxy(t, mainServer.URL, newServer.URL,
-		"/tmp/test_proxy_percentage.db", []proxy.Route{
-			{Prefix: "/full", Percentage: 100},
-			{Prefix: "/none", Percentage: 0},
-		})
+	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, []proxy.Route{
+		{Prefix: "/full", Percentage: 100},
+		{Prefix: "/none", Percentage: 0},
+	})
 
 	for i := 0; i < 20; i++ {
 		if servedBy := getServedBy(t, proxyServer.URL, "/full/thing"); servedBy != "new" {
@@ -95,10 +39,9 @@ func TestRoutesAPI(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	proxyServer, _ := setupRoutingProxy(t, mainServer.URL, newServer.URL,
-		"/tmp/test_proxy_routes_api.db", []proxy.Route{
-			{Prefix: "/api/v2", Percentage: 25},
-		})
+	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, []proxy.Route{
+		{Prefix: "/api/v2", Percentage: 25},
+	})
 
 	// GET returns the current routing table.
 	resp, err := http.Get(proxyServer.URL + "/__strangler_fig/api/routes")
@@ -157,10 +100,9 @@ func TestNewServerFallback(t *testing.T) {
 
 	// Route 100% of traffic to an unreachable new server: the proxy should
 	// fall back to the main server instead of failing the request.
-	proxyServer, _ := setupRoutingProxy(t, mainServer.URL, "http://localhost:1",
-		"/tmp/test_proxy_fallback.db", []proxy.Route{
-			{Prefix: "/", Percentage: 100},
-		})
+	proxyServer, _ := setupProxy(t, mainServer.URL, "http://localhost:1", 1.0, []proxy.Route{
+		{Prefix: "/", Percentage: 100},
+	})
 
 	if servedBy := getServedBy(t, proxyServer.URL, "/test"); servedBy != "main" {
 		t.Errorf("Expected fallback to main server, got %q", servedBy)
@@ -173,21 +115,16 @@ func TestServedByLogged(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	dbPath := "/tmp/test_proxy_served_by.db"
-	proxyServer, _ := setupRoutingProxy(t, mainServer.URL, newServer.URL, dbPath,
-		[]proxy.Route{{Prefix: "/migrated", Percentage: 100}})
+	proxyServer, dbPath := setupProxy(t, mainServer.URL, newServer.URL, 1.0, []proxy.Route{
+		{Prefix: "/migrated", Percentage: 100},
+	})
 
 	getServedBy(t, proxyServer.URL, "/migrated/thing")
 	getServedBy(t, proxyServer.URL, "/legacy/thing")
 
 	time.Sleep(100 * time.Millisecond)
 
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-	defer db.Close()
-
+	db := openDB(t, dbPath)
 	var servedBy string
 	if err := db.QueryRow("SELECT served_by FROM requests WHERE url_path = '/migrated/thing'").Scan(&servedBy); err != nil {
 		t.Fatalf("Failed to query database: %v", err)
@@ -210,10 +147,9 @@ func TestDashboardShowsRoutes(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	proxyServer, _ := setupRoutingProxy(t, mainServer.URL, newServer.URL,
-		"/tmp/test_proxy_dash_routes.db", []proxy.Route{
-			{Prefix: "/api/v2", Percentage: 42},
-		})
+	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, []proxy.Route{
+		{Prefix: "/api/v2", Percentage: 42},
+	})
 
 	resp, err := http.Get(proxyServer.URL + "/__strangler_fig")
 	if err != nil {
@@ -244,8 +180,7 @@ func TestRequestDetailPage(t *testing.T) {
 	defer mainServer.Close()
 	defer differentServer.Close()
 
-	proxyServer, _ := setupRoutingProxy(t, mainServer.URL, differentServer.URL,
-		"/tmp/test_proxy_detail.db", nil)
+	proxyServer, _ := setupProxy(t, mainServer.URL, differentServer.URL, 1.0, nil)
 
 	resp, err := http.Get(proxyServer.URL + "/some/path")
 	if err != nil {
@@ -298,8 +233,7 @@ func TestDashboardPerPathStats(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	proxyServer, _ := setupRoutingProxy(t, mainServer.URL, newServer.URL,
-		"/tmp/test_proxy_path_stats.db", nil)
+	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
 
 	for i := 0; i < 3; i++ {
 		resp, err := http.Get(proxyServer.URL + "/stats/path")

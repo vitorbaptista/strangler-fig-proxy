@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Strangler Fig Proxy Dashboard</title>
+  <style>
+    :root {
+      --good-bg: #d1f5d3;
+      --bad-bg:  #f8d1d1;
+    }
+    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { padding: .5rem .75rem; border-bottom: 1px solid #ddd; text-align: right; }
+    tr.good { background: var(--good-bg); }
+    tr.bad  { background: var(--bad-bg);  }
+    tr:hover { opacity: .9; }
+  </style>
+</head>
+<body>
+  <h1>Strangler Fig Proxy Dashboard</h1>
+
+  <section id="stats">
+    <p>Total requests: {{.Total}}</p>
+    <p>Matches: {{.Matches}}</p>
+    <p>Mismatches: {{.Mismatches}}</p>
+    <p>Match ratio: {{printf "%.2f" (mul100 .MatchRatio)}} %</p>
+    <p>Served by new server: {{printf "%.2f" (mul100 .ServedByNewRatio)}} %</p>
+    <p>Avg new vs main response time change: {{.AvgChangeDisplay}}</p>
+  </section>
+
+  <section id="routes">
+    <h2>Traffic routing</h2>
+    <p>Requests matching these prefixes are served by the <strong>new</strong> server for the given percentage of traffic. Everything else is served by the main server. Changes apply immediately.</p>
+    <table id="routes-table">
+      <thead>
+        <tr><th>Prefix</th><th>% to new server</th><th></th></tr>
+      </thead>
+      <tbody>
+        {{range .Routes}}
+          <tr><td><input type="text" class="route-prefix" value="{{.Prefix}}"></td>
+              <td><input type="number" class="route-percentage" min="0" max="100" step="1" value="{{.Percentage}}"></td>
+              <td><button onclick="this.closest('tr').remove()">Remove</button></td></tr>
+        {{end}}
+      </tbody>
+    </table>
+    <p>
+      <button onclick="addRouteRow()">Add route</button>
+      <button onclick="saveRoutes()">Save routes</button>
+      <span id="routes-status"></span>
+    </p>
+  </section>
+
+  <script>
+    function addRouteRow() {
+      const tbody = document.querySelector('#routes-table tbody');
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td><input type="text" class="route-prefix" placeholder="/api/v2"></td>' +
+        '<td><input type="number" class="route-percentage" min="0" max="100" step="1" value="0"></td>' +
+        '<td><button onclick="this.closest(\'tr\').remove()">Remove</button></td>';
+      tbody.appendChild(tr);
+    }
+
+    async function saveRoutes() {
+      const routes = [];
+      document.querySelectorAll('#routes-table tbody tr').forEach(tr => {
+        const prefix = tr.querySelector('.route-prefix').value.trim();
+        const percentage = parseFloat(tr.querySelector('.route-percentage').value) || 0;
+        if (prefix) routes.push({prefix, percentage});
+      });
+      const status = document.getElementById('routes-status');
+      try {
+        const resp = await fetch('/__strangler_fig/api/routes', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(routes)
+        });
+        if (resp.ok) {
+          status.textContent = 'Saved';
+          setTimeout(() => location.reload(), 500);
+        } else {
+          status.textContent = 'Error: ' + await resp.text();
+        }
+      } catch (err) {
+        status.textContent = 'Error: ' + err;
+      }
+    }
+
+    // Auto-refresh every 10s, paused while editing routes so input is not lost.
+    let refreshTimer = setTimeout(() => location.reload(), 10000);
+    document.addEventListener('focusin', e => {
+      if (e.target.closest('#routes')) {
+        clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }
+    });
+  </script>
+
+  <section id="paths">
+    <h2>Per-path statistics</h2>
+    <table>
+      <thead>
+        <tr><th>Path</th><th>Requests</th><th>Match %</th><th>Served by new %</th><th>Avg main (ms)</th><th>Avg new (ms)</th></tr>
+      </thead>
+      <tbody>
+        {{range .PathStats}}
+          <tr>
+            <td style="text-align:left">{{.Path}}</td>
+            <td>{{.Count}}</td>
+            <td>{{printf "%.1f" .MatchPct}}</td>
+            <td>{{printf "%.1f" .ServedByNewPct}}</td>
+            <td>{{printf "%.1f" .AvgMainMs}}</td>
+            <td>{{printf "%.1f" .AvgNewMs}}</td>
+          </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+
+  <section id="recent">
+    <h2>Last {{.Limit}} requests</h2>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>URL</th><th>Failure reason</th><th>Δ Time</th></tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+          <tr class="{{if .ResponsesMatch}}good{{else}}bad{{end}}">
+            <td><a href="/__strangler_fig/requests/{{.ID}}">{{.ID}}</a></td>
+            <td>{{.URL}}</td>
+            <td>{{if .ResponsesMatch}}—{{else}}{{.MismatchType}}{{end}}</td>
+            <td>{{.ChangeDisplay}}</td>
+          </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+</body>
+</html>

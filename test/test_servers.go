@@ -64,3 +64,15 @@ func readBody(r *http.Request) string {
 
 	return strings.ReplaceAll(body, `"`, `\"`)
 }
+
+// NewHeaderCapturingServer responds like the main server but first passes the
+// received request headers to inspect, so tests can assert on what the proxy
+// actually forwarded.
+func NewHeaderCapturingServer(inspect func(http.Header)) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inspect(r.Header)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"server": "main"}`))
+	}))
+}

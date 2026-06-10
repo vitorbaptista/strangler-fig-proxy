@@ -1,4 +1,4 @@
-module strangler-fix-proxy
+module github.com/vitorbaptista/strangler-fig-proxy
 
 go 1.21
 

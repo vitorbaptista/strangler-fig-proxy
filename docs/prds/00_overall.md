@@ -225,9 +225,9 @@ Given the proxy nature of the system, integration tests will be the primary test
 - Database maintenance tasks: hourly enforcement of `DATABASE_RETENTION_DAYS` and `DATABASE_MAX_SIZE_MB` (done)
 - Per-path statistics in the dashboard: counts, match %, traffic split, avg response times (done)
 - Response diff viewer at `/__strangler_fig/requests/{id}` with side-by-side line diff, JSON pretty-printed before diffing (done)
-- Performance optimizations (pending)
+- Structured JSON logging via log/slog (done)
+- Proxy correctness: hop-by-hop headers stripped, X-Forwarded-For/Host/Proto set, shared HTTP transport with connection pooling, comparison request mirrored in the background (done)
 - Response transformation capabilities (pending)
-- Structured JSON logging (pending)
 
 ## 8. Success Criteria
 
