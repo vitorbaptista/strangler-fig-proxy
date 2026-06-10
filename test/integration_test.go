@@ -354,9 +354,11 @@ func TestBothServersUnavailable(t *testing.T) {
 }
 
 func TestHopByHopHeadersNotForwarded(t *testing.T) {
-	var receivedKeepAlive string
+	// The handler runs in the server's goroutine; a channel gives the test a
+	// happens-before edge on the captured value (avoids a data race).
+	received := make(chan string, 4)
 	upstream := NewHeaderCapturingServer(func(h http.Header) {
-		receivedKeepAlive = h.Get("Keep-Alive")
+		received <- h.Get("Keep-Alive")
 	})
 	defer upstream.Close()
 	newServer := NewNewServer()
@@ -372,15 +374,15 @@ func TestHopByHopHeadersNotForwarded(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if receivedKeepAlive != "" {
-		t.Errorf("Expected hop-by-hop Keep-Alive header to be stripped, upstream received %q", receivedKeepAlive)
+	if got := <-received; got != "" {
+		t.Errorf("Expected hop-by-hop Keep-Alive header to be stripped, upstream received %q", got)
 	}
 }
 
 func TestXForwardedForSet(t *testing.T) {
-	var forwardedFor string
+	received := make(chan string, 4)
 	upstream := NewHeaderCapturingServer(func(h http.Header) {
-		forwardedFor = h.Get("X-Forwarded-For")
+		received <- h.Get("X-Forwarded-For")
 	})
 	defer upstream.Close()
 	newServer := NewNewServer()
@@ -394,15 +396,15 @@ func TestXForwardedForSet(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if forwardedFor == "" {
+	if got := <-received; got == "" {
 		t.Error("Expected X-Forwarded-For to be set on the upstream request")
 	}
 }
 
 func TestConnectionListedHeadersNotForwarded(t *testing.T) {
-	var receivedCustom string
+	received := make(chan string, 4)
 	upstream := NewHeaderCapturingServer(func(h http.Header) {
-		receivedCustom = h.Get("X-Drop-Me")
+		received <- h.Get("X-Drop-Me")
 	})
 	defer upstream.Close()
 	newServer := NewNewServer()
@@ -421,7 +423,7 @@ func TestConnectionListedHeadersNotForwarded(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if receivedCustom != "" {
-		t.Errorf("Expected Connection-listed header to be stripped, upstream received %q", receivedCustom)
+	if got := <-received; got != "" {
+		t.Errorf("Expected Connection-listed header to be stripped, upstream received %q", got)
 	}
 }

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"math"
 	"reflect"
 	"testing"
 )
@@ -210,5 +211,15 @@ func TestRouteTableSet(t *testing.T) {
 	}
 	if table.ShouldRouteToNew("/api/v2/users") {
 		t.Error("expected no routing after clearing the table")
+	}
+}
+
+func TestRouteValidateRejectsNaN(t *testing.T) {
+	route := Route{Prefix: "/api", Percentage: math.NaN()}
+	if err := route.Validate(); err == nil {
+		t.Error("expected error for NaN percentage")
+	}
+	if _, err := ParseRoutes("/api=NaN"); err == nil {
+		t.Error("expected ParseRoutes to reject NaN percentage")
 	}
 }

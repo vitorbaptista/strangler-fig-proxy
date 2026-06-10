@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -36,7 +37,9 @@ func (r Route) Validate() error {
 	if !strings.HasPrefix(r.Prefix, "/") {
 		return fmt.Errorf("route prefix %q must start with /", r.Prefix)
 	}
-	if r.Percentage < 0 || r.Percentage > 100 {
+	// NaN compares false against everything, so it must be rejected
+	// explicitly or it would slip past the range check below.
+	if math.IsNaN(r.Percentage) || r.Percentage < 0 || r.Percentage > 100 {
 		return fmt.Errorf("route %q percentage must be between 0 and 100, got %v", r.Prefix, r.Percentage)
 	}
 	return nil
