@@ -23,6 +23,12 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 }).ParseFS(templateFS, "templates/*.html"))
 
 func (h *Handler) handleInternal(w http.ResponseWriter, r *http.Request) {
+	// Authenticated pages must not be cached, and the ?token= auth parameter
+	// must not leak through the Referer header of outbound links.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
 	if !h.authorized(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -72,7 +78,9 @@ func (h *Handler) handleRoutesAPI(w http.ResponseWriter, r *http.Request) {
 		// fall through to the response below
 	case http.MethodPut:
 		var routes []Route
-		if err := json.NewDecoder(r.Body).Decode(&routes); err != nil {
+		// A routing table is tiny; bound the body to keep oversized requests
+		// from pressuring the decoder.
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&routes); err != nil {
 			http.Error(w, fmt.Sprintf("invalid routes JSON: %v", err), http.StatusBadRequest)
 			return
 		}

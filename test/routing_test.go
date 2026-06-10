@@ -101,12 +101,24 @@ func TestNewServerFallback(t *testing.T) {
 
 	// Route 100% of traffic to an unreachable new server: the proxy should
 	// fall back to the main server instead of failing the request.
-	proxyServer, _ := setupProxy(t, mainServer.URL, "http://localhost:1", 1.0, []proxy.Route{
+	proxyServer, dbPath := setupProxy(t, mainServer.URL, "http://localhost:1", 1.0, []proxy.Route{
 		{Prefix: "/", Percentage: 100},
 	})
 
 	if servedBy := getServedBy(t, proxyServer.URL, "/test"); servedBy != "main" {
 		t.Errorf("Expected fallback to main server, got %q", servedBy)
+	}
+
+	// Availability failures are recorded distinctly from behavioral
+	// mismatches.
+	waitForLogged(t, dbPath, "/test", 1)
+	db := openDB(t, dbPath)
+	var mismatchType string
+	if err := db.QueryRow("SELECT mismatch_type FROM requests WHERE url_path = '/test'").Scan(&mismatchType); err != nil {
+		t.Fatalf("Failed to query database: %v", err)
+	}
+	if mismatchType != "new_unavailable" {
+		t.Errorf("Expected mismatch_type 'new_unavailable', got %q", mismatchType)
 	}
 }
 

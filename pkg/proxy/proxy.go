@@ -228,6 +228,17 @@ func (h *Handler) logComparison(method, urlPath, rawQuery string, header http.He
 				"method", method, "path", urlPath, "type", record.MismatchType,
 				"main_status", record.MainStatus, "new_status", record.NewStatus)
 		}
+	} else {
+		// Distinguish availability failures from behavioral mismatches so the
+		// dashboard doesn't show "bad" rows with a blank reason.
+		switch {
+		case mainResp == nil && newResp == nil:
+			record.MismatchType = "both_unavailable"
+		case mainResp == nil:
+			record.MismatchType = "main_unavailable"
+		default:
+			record.MismatchType = "new_unavailable"
+		}
 	}
 
 	if err := h.database.InsertRequest(record); err != nil {
