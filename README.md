@@ -65,6 +65,7 @@ make run-example
 | `DATABASE_MAX_SIZE_MB` | Maximum database size | `1000` |
 | `DATABASE_RETENTION_DAYS` | Data retention period | `7` |
 | `NEW_SERVER_ROUTES` | Comma-separated URL prefixes to route to new server, optionally with a traffic percentage (`/api/v2=25`) | - |
+| `DASHBOARD_AUTH_TOKEN` | When set, the dashboard and `/__strangler_fig` APIs require this token (`Authorization: Bearer <token>` or `?token=`) | - |
 
 ### Example Configuration
 ```bash

@@ -68,8 +68,10 @@
         if (prefix) routes.push({prefix, percentage});
       });
       const status = document.getElementById('routes-status');
+      const token = new URLSearchParams(location.search).get('token');
+      const apiURL = '/__strangler_fig/api/routes' + (token ? '?token=' + encodeURIComponent(token) : '');
       try {
-        const resp = await fetch('/__strangler_fig/api/routes', {
+        const resp = await fetch(apiURL, {
           method: 'PUT',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify(routes)
@@ -132,7 +134,7 @@
       <tbody>
         {{range .Rows}}
           <tr class="{{if .ResponsesMatch}}good{{else}}bad{{end}}">
-            <td><a href="/__strangler_fig/requests/{{.ID}}">{{.ID}}</a></td>
+            <td><a href="/__strangler_fig/requests/{{.ID}}{{$.TokenQuery}}">{{.ID}}</a></td>
             <td>{{.URL}}</td>
             <td>{{if .ResponsesMatch}}—{{else}}{{.MismatchType}}{{end}}</td>
             <td>{{.ChangeDisplay}}</td>

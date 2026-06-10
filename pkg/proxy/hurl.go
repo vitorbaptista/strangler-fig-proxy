@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -101,6 +102,11 @@ func jsonAsserts(body string) ([]string, bool) {
 	decoder.UseNumber() // preserve the exact number representation
 	var parsed interface{}
 	if err := decoder.Decode(&parsed); err != nil {
+		return nil, false
+	}
+	// Reject trailing content after the first JSON value, matching the
+	// proxy's own comparison (json.Unmarshal rejects it too).
+	if _, err := decoder.Token(); err != io.EOF {
 		return nil, false
 	}
 

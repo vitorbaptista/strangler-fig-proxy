@@ -17,6 +17,11 @@ type Config struct {
 	DatabaseRetentionDays int
 	Port                  string
 	Routes                []Route
+	// DashboardToken, when set, gates the /__strangler_fig dashboard and
+	// APIs: requests must carry it as "Authorization: Bearer <token>" or a
+	// "token" query parameter. Empty means no authentication (isolated
+	// deployments only - the requests API exposes recorded traffic).
+	DashboardToken string
 }
 
 // Route directs requests whose path starts with Prefix to the new server for

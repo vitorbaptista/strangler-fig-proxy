@@ -158,3 +158,23 @@ func TestJSONAssertsTooLarge(t *testing.T) {
 		t.Error("expected oversized JSON to fall back to exact body assert")
 	}
 }
+
+func TestGenerateHurlTrailingGarbageFallsBackToExactBody(t *testing.T) {
+	// A body starting with valid JSON but with trailing content is not JSON;
+	// the proxy's comparison treats it as opaque text, and so must the
+	// generated asserts.
+	body := `{"a": 1} trailing`
+	records := []RequestRecord{{
+		ID: 1, Method: "GET", URLPath: "/odd", MainStatus: 200, MainBody: body,
+	}}
+
+	out := GenerateHurl(records)
+
+	if strings.Contains(out, "jsonpath") {
+		t.Errorf("expected no structural asserts for body with trailing garbage, got:\n%s", out)
+	}
+	want := "base64," + base64.StdEncoding.EncodeToString([]byte(body)) + ";"
+	if !strings.Contains(out, want) {
+		t.Errorf("expected base64 exact body, got:\n%s", out)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vitorbaptista/strangler-fig-proxy/pkg/proxy"
 
@@ -72,5 +73,26 @@ func getServedBy(t *testing.T, proxyURL, path string) string {
 	default:
 		t.Fatalf("Unexpected response body: %s", string(body))
 		return ""
+	}
+}
+
+// waitForLogged polls until at least n requests for urlPath have been logged.
+// Comparison logging is asynchronous, so tests must wait for it instead of
+// sleeping a fixed amount (fixed sleeps flake on slow CI machines).
+func waitForLogged(t *testing.T, dbPath, urlPath string, n int) {
+	t.Helper()
+	db := openDB(t, dbPath)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var count int
+		err := db.QueryRow("SELECT COUNT(*) FROM requests WHERE url_path = ?", urlPath).Scan(&count)
+		if err == nil && count >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d logged requests for %s (have %d, err: %v)", n, urlPath, count, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

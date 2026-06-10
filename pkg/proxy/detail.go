@@ -142,13 +142,15 @@ func (h *Handler) handleRequestDetail(w http.ResponseWriter, r *http.Request, id
 	record.ResponsesMatch = responsesMatch.Valid && responsesMatch.Bool
 
 	data := struct {
-		Record    RequestRecord
-		Timestamp string
-		Diff      []DiffLine
+		Record     RequestRecord
+		Timestamp  string
+		Diff       []DiffLine
+		TokenQuery string
 	}{
-		Record:    record,
-		Timestamp: timestamp.String,
-		Diff:      DiffBodies(record.MainBody, record.NewBody),
+		Record:     record,
+		Timestamp:  timestamp.String,
+		Diff:       DiffBodies(record.MainBody, record.NewBody),
+		TokenQuery: tokenQuery(r),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

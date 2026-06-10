@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -21,6 +23,11 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 }).ParseFS(templateFS, "templates/*.html"))
 
 func (h *Handler) handleInternal(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	path := strings.TrimSuffix(r.URL.Path, "/")
 	switch {
 	case path == internalPathPrefix:
@@ -38,6 +45,22 @@ func (h *Handler) handleInternal(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// authorized checks the optional dashboard token. Browsers can't attach an
+// Authorization header to plain links, so a "token" query parameter is
+// accepted as well.
+func (h *Handler) authorized(r *http.Request) bool {
+	token := h.config.DashboardToken
+	if token == "" {
+		return true
+	}
+
+	provided := r.URL.Query().Get("token")
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		provided = strings.TrimPrefix(auth, "Bearer ")
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1
 }
 
 // handleRoutesAPI exposes the routing table for runtime inspection (GET) and
@@ -102,6 +125,7 @@ type dashboardData struct {
 	Rows                       []TableRow
 	Routes                     []Route
 	PathStats                  []PathStat
+	TokenQuery                 string // "?token=..." when the viewer authenticated via query param
 }
 
 func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +142,7 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to collect dashboard data", http.StatusInternalServerError)
 		return
 	}
+	data.TokenQuery = tokenQuery(r)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := templates.ExecuteTemplate(w, "dashboard.html", data); err != nil {
@@ -163,8 +188,8 @@ func (h *Handler) collectDashboardData(limit int) (*dashboardData, error) {
 		       COUNT(*) AS cnt,
 		       100.0 * SUM(CASE WHEN responses_match = 1 THEN 1 ELSE 0 END) / COUNT(*),
 		       100.0 * SUM(CASE WHEN served_by = 'new' THEN 1 ELSE 0 END) / COUNT(*),
-		       COALESCE(AVG(main_response_time_ms), 0),
-		       COALESCE(AVG(new_response_time_ms), 0)
+		       COALESCE(AVG(CASE WHEN main_status > 0 THEN main_response_time_ms END), 0),
+		       COALESCE(AVG(CASE WHEN new_status > 0 THEN new_response_time_ms END), 0)
 		  FROM requests
 	  GROUP BY url_path
 	  ORDER BY cnt DESC
@@ -211,6 +236,15 @@ func (h *Handler) collectDashboardData(limit int) (*dashboardData, error) {
 	}
 
 	return data, nil
+}
+
+// tokenQuery preserves a query-parameter token across dashboard links so a
+// browser session stays authenticated while navigating.
+func tokenQuery(r *http.Request) string {
+	if token := r.URL.Query().Get("token"); token != "" {
+		return "?token=" + url.QueryEscape(token)
+	}
+	return ""
 }
 
 // formatPercentChange renders a new/main time ratio as "+20%" or "-35%".

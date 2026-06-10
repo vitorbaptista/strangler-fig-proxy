@@ -27,6 +27,7 @@ func LoadConfig() (*proxy.Config, error) {
 		DatabaseRetentionDays: getEnvInt("DATABASE_RETENTION_DAYS", 7),
 		Port:                  getEnv("PORT", "8080"),
 		Routes:                routes,
+		DashboardToken:        getEnv("DASHBOARD_AUTH_TOKEN", ""),
 	}
 
 	if err := validateServerURL("MAIN_SERVER_URL", config.MainServerURL); err != nil {

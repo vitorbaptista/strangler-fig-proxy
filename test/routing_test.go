@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/vitorbaptista/strangler-fig-proxy/pkg/proxy"
 )
@@ -122,7 +123,8 @@ func TestServedByLogged(t *testing.T) {
 	getServedBy(t, proxyServer.URL, "/migrated/thing")
 	getServedBy(t, proxyServer.URL, "/legacy/thing")
 
-	time.Sleep(100 * time.Millisecond)
+	waitForLogged(t, dbPath, "/migrated/thing", 1)
+	waitForLogged(t, dbPath, "/legacy/thing", 1)
 
 	db := openDB(t, dbPath)
 	var servedBy string
@@ -180,7 +182,7 @@ func TestRequestDetailPage(t *testing.T) {
 	defer mainServer.Close()
 	defer differentServer.Close()
 
-	proxyServer, _ := setupProxy(t, mainServer.URL, differentServer.URL, 1.0, nil)
+	proxyServer, dbPath := setupProxy(t, mainServer.URL, differentServer.URL, 1.0, nil)
 
 	resp, err := http.Get(proxyServer.URL + "/some/path")
 	if err != nil {
@@ -188,7 +190,7 @@ func TestRequestDetailPage(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	time.Sleep(100 * time.Millisecond)
+	waitForLogged(t, dbPath, "/some/path", 1)
 
 	detail, err := http.Get(proxyServer.URL + "/__strangler_fig/requests/1")
 	if err != nil {
@@ -233,7 +235,7 @@ func TestDashboardPerPathStats(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
+	proxyServer, dbPath := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
 
 	for i := 0; i < 3; i++ {
 		resp, err := http.Get(proxyServer.URL + "/stats/path")
@@ -243,7 +245,7 @@ func TestDashboardPerPathStats(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitForLogged(t, dbPath, "/stats/path", 3)
 
 	resp, err := http.Get(proxyServer.URL + "/__strangler_fig")
 	if err != nil {
@@ -271,7 +273,7 @@ func TestStatsAPI(t *testing.T) {
 	defer mainServer.Close()
 	defer differentServer.Close()
 
-	proxyServer, _ := setupProxy(t, mainServer.URL, differentServer.URL, 1.0, []proxy.Route{
+	proxyServer, dbPath := setupProxy(t, mainServer.URL, differentServer.URL, 1.0, []proxy.Route{
 		{Prefix: "/api/v2", Percentage: 25},
 	})
 
@@ -281,7 +283,7 @@ func TestStatsAPI(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	time.Sleep(100 * time.Millisecond)
+	waitForLogged(t, dbPath, "/stats/thing", 1)
 
 	statsResp, err := http.Get(proxyServer.URL + "/__strangler_fig/api/stats")
 	if err != nil {
@@ -323,7 +325,7 @@ func TestRequestsAPI(t *testing.T) {
 	defer mainServer.Close()
 	defer differentServer.Close()
 
-	proxyServer, _ := setupProxy(t, mainServer.URL, differentServer.URL, 1.0, nil)
+	proxyServer, dbPath := setupProxy(t, mainServer.URL, differentServer.URL, 1.0, nil)
 
 	for _, path := range []string{"/a", "/a", "/b"} {
 		resp, err := http.Get(proxyServer.URL + path)
@@ -333,7 +335,8 @@ func TestRequestsAPI(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitForLogged(t, dbPath, "/a", 2)
+	waitForLogged(t, dbPath, "/b", 1)
 
 	resp, err := http.Get(proxyServer.URL + "/__strangler_fig/api/requests?path=/a&match=false&limit=10")
 	if err != nil {
@@ -381,7 +384,7 @@ func TestHurlExport(t *testing.T) {
 	defer mainServer.Close()
 	defer newServer.Close()
 
-	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
+	proxyServer, dbPath := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
 
 	// Two GETs to the same URL (deduplicated), one to another path, one POST
 	// (excluded from the export).
@@ -403,7 +406,8 @@ func TestHurlExport(t *testing.T) {
 	}
 	postResp.Body.Close()
 
-	time.Sleep(100 * time.Millisecond)
+	waitForLogged(t, dbPath, "/api/users", 3)
+	waitForLogged(t, dbPath, "/other", 1)
 
 	hurlResp, err := http.Get(proxyServer.URL + "/__strangler_fig/api/tests.hurl?path=/api")
 	if err != nil {
@@ -428,5 +432,63 @@ func TestHurlExport(t *testing.T) {
 	}
 	if !strings.Contains(suite, `jsonpath "$['server']" == "main"`) {
 		t.Errorf("Expected jsonpath assert on legacy body:\n%s", suite)
+	}
+}
+
+func TestDashboardAuthToken(t *testing.T) {
+	mainServer := NewMainServer()
+	newServer := NewNewServer()
+	defer mainServer.Close()
+	defer newServer.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "proxy.db")
+	config := &proxy.Config{
+		MainServerURL:  mainServer.URL,
+		NewServerURL:   newServer.URL,
+		SamplingRate:   1.0,
+		DatabasePath:   dbPath,
+		DashboardToken: "s3cret",
+	}
+	database, err := proxy.InitDatabase(config.DatabasePath)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	proxyServer := httptest.NewServer(proxy.NewHandler(config, database))
+	t.Cleanup(proxyServer.Close)
+
+	// Proxied traffic is unaffected by the dashboard token.
+	if servedBy := getServedBy(t, proxyServer.URL, "/app/page"); servedBy != "main" {
+		t.Errorf("Expected proxied traffic to pass without token, got %q", servedBy)
+	}
+
+	cases := []struct {
+		name       string
+		path       string
+		authHeader string
+		wantStatus int
+	}{
+		{"dashboard without token", "/__strangler_fig", "", http.StatusUnauthorized},
+		{"routes API without token", "/__strangler_fig/api/routes", "", http.StatusUnauthorized},
+		{"requests API without token", "/__strangler_fig/api/requests", "", http.StatusUnauthorized},
+		{"wrong token", "/__strangler_fig", "Bearer nope", http.StatusUnauthorized},
+		{"bearer token", "/__strangler_fig", "Bearer s3cret", http.StatusOK},
+		{"query token", "/__strangler_fig?token=s3cret", "", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", proxyServer.URL+tc.path, nil)
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Failed to make request: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.wantStatus {
+				t.Errorf("Expected status %d, got %d", tc.wantStatus, resp.StatusCode)
+			}
+		})
 	}
 }

@@ -14,7 +14,7 @@
   </style>
 </head>
 <body>
-  <p><a href="/__strangler_fig">&larr; Back to dashboard</a></p>
+  <p><a href="/__strangler_fig{{.TokenQuery}}">&larr; Back to dashboard</a></p>
   <h1>Request {{.Record.ID}}: {{.Record.Method}} {{.Record.URLPath}}</h1>
 
   <table>

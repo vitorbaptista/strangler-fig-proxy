@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/vitorbaptista/strangler-fig-proxy/pkg/proxy"
 )
@@ -40,7 +39,7 @@ func TestResponseComparison(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	time.Sleep(100 * time.Millisecond)
+	waitForLogged(t, dbPath, "/test", 1)
 
 	db := openDB(t, dbPath)
 	var responsesMatch bool
@@ -116,8 +115,8 @@ func TestSamplingRateZero(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	time.Sleep(100 * time.Millisecond)
-
+	// With sampling rate 0.0 no logging goroutine is ever started, so the
+	// absence of rows can be asserted immediately.
 	db := openDB(t, dbPath)
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM requests").Scan(&count); err != nil {
@@ -275,7 +274,7 @@ func TestQueryStringPreservation(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitForLogged(t, dbPath, "/api/test", 1)
 
 	db := openDB(t, dbPath)
 	var queryParams string

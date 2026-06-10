@@ -76,7 +76,7 @@ Client Request → Strangler Fig Proxy → Main Server (returns response)
   - Response time comparisons
   - Filter by URL pattern, time range, match status
 - **FR-5.3**: Diff viewer for response comparisons
-- **FR-5.4**: No authentication required (internal use only)
+- **FR-5.4**: No authentication required by default (internal use only); an optional `DASHBOARD_AUTH_TOKEN` gates the dashboard and APIs for non-isolated deployments
 
 ## 4. Non-Functional Requirements
 
