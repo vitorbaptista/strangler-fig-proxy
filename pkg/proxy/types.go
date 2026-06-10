@@ -3,14 +3,70 @@ package proxy
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
+	"math/rand"
 	"path"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// Route directs requests whose path starts with Prefix to the new server
+// for Percentage (0-100) of the matching traffic. The remainder keeps being
+// served by the main server (while still being compared in the background).
+type Route struct {
+	Prefix     string  `json:"prefix"`
+	Percentage float64 `json:"percentage"`
+}
+
+func (r Route) Validate() error {
+	if !strings.HasPrefix(r.Prefix, "/") {
+		return fmt.Errorf("route prefix %q must start with /", r.Prefix)
+	}
+	if r.Percentage < 0 || r.Percentage > 100 {
+		return fmt.Errorf("route %q percentage must be between 0 and 100, got %v", r.Prefix, r.Percentage)
+	}
+	return nil
+}
+
+// ParseRoutes parses a comma-separated routes definition such as
+// "/api/v2=25,/health" where each entry is "prefix" (implies 100%) or
+// "prefix=percentage".
+func ParseRoutes(value string) ([]Route, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+
+	var routes []Route
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+
+		route := Route{Prefix: item, Percentage: 100}
+		if idx := strings.Index(item, "="); idx >= 0 {
+			route.Prefix = strings.TrimSpace(item[:idx])
+			percentage, err := strconv.ParseFloat(strings.TrimSpace(item[idx+1:]), 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid percentage in route %q: %w", item, err)
+			}
+			route.Percentage = percentage
+		}
+
+		if err := route.Validate(); err != nil {
+			return nil, err
+		}
+		routes = append(routes, route)
+	}
+
+	return routes, nil
+}
 
 type Config struct {
 	MainServerURL         string
@@ -20,16 +76,82 @@ type Config struct {
 	DatabaseMaxSizeMB     int
 	DatabaseRetentionDays int
 	Port                  string
-	NewServerRoutes       []string
+	NewServerRoutes       []string // legacy prefix-only routes, treated as 100%
+	Routes                []Route
+
+	routesMu sync.RWMutex
 }
 
-func (c *Config) ShouldRouteToNewServer(path string) bool {
-	for _, route := range c.NewServerRoutes {
-		if strings.HasPrefix(path, route) {
-			return true
+// MatchRoute returns the first route whose prefix matches path. Legacy
+// NewServerRoutes entries are used (at 100%) when no parsed Routes are set.
+func (c *Config) MatchRoute(path string) (Route, bool) {
+	c.routesMu.RLock()
+	defer c.routesMu.RUnlock()
+
+	if len(c.Routes) > 0 {
+		for _, route := range c.Routes {
+			if strings.HasPrefix(path, route.Prefix) {
+				return route, true
+			}
+		}
+		return Route{}, false
+	}
+
+	for _, prefix := range c.NewServerRoutes {
+		if strings.HasPrefix(path, prefix) {
+			return Route{Prefix: prefix, Percentage: 100}, true
 		}
 	}
-	return false
+	return Route{}, false
+}
+
+// ShouldRouteToNewServer decides whether this request should be served by the
+// new server. For routes with a partial percentage the decision is
+// probabilistic, so traffic can be shifted gradually.
+func (c *Config) ShouldRouteToNewServer(path string) bool {
+	route, ok := c.MatchRoute(path)
+	if !ok {
+		return false
+	}
+	if route.Percentage >= 100 {
+		return true
+	}
+	if route.Percentage <= 0 {
+		return false
+	}
+	return rand.Float64()*100 < route.Percentage
+}
+
+// GetRoutes returns a copy of the effective routes.
+func (c *Config) GetRoutes() []Route {
+	c.routesMu.RLock()
+	defer c.routesMu.RUnlock()
+
+	if len(c.Routes) > 0 {
+		return append([]Route(nil), c.Routes...)
+	}
+
+	routes := make([]Route, 0, len(c.NewServerRoutes))
+	for _, prefix := range c.NewServerRoutes {
+		routes = append(routes, Route{Prefix: prefix, Percentage: 100})
+	}
+	return routes
+}
+
+// SetRoutes atomically replaces the routing table, allowing traffic
+// percentages to be changed at runtime without restarting the proxy.
+func (c *Config) SetRoutes(routes []Route) error {
+	for _, route := range routes {
+		if err := route.Validate(); err != nil {
+			return err
+		}
+	}
+
+	c.routesMu.Lock()
+	defer c.routesMu.Unlock()
+	c.Routes = append([]Route(nil), routes...)
+	c.NewServerRoutes = nil
+	return nil
 }
 
 type Database struct {
@@ -54,6 +176,7 @@ type RequestRecord struct {
 	NewResponseTimeMs  int       `json:"new_response_time_ms"`
 	ResponsesMatch     bool      `json:"responses_match"`
 	MismatchType       string    `json:"mismatch_type"`
+	ServedBy           string    `json:"served_by"` // "main" or "new"
 }
 
 func InitDatabase(dbPath string) (*Database, error) {
@@ -89,7 +212,8 @@ func (d *Database) createTables() error {
 		new_body TEXT,
 		new_response_time_ms INTEGER,
 		responses_match BOOLEAN,
-		mismatch_type TEXT
+		mismatch_type TEXT,
+		served_by TEXT
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_timestamp ON requests(timestamp);
@@ -97,8 +221,18 @@ func (d *Database) createTables() error {
 	CREATE INDEX IF NOT EXISTS idx_responses_match ON requests(responses_match);
 	`
 
-	_, err := d.db.Exec(query)
-	return err
+	if _, err := d.db.Exec(query); err != nil {
+		return err
+	}
+
+	// Migrate databases created before the served_by column existed.
+	if _, err := d.db.Exec(`ALTER TABLE requests ADD COLUMN served_by TEXT`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (d *Database) InsertRequest(record *RequestRecord) error {
@@ -107,8 +241,8 @@ func (d *Database) InsertRequest(record *RequestRecord) error {
 		method, url_path, query_params, request_headers, request_body,
 		main_status, main_headers, main_body, main_response_time_ms,
 		new_status, new_headers, new_body, new_response_time_ms,
-		responses_match, mismatch_type
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		responses_match, mismatch_type, served_by
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err := d.db.Exec(query,
@@ -127,6 +261,7 @@ func (d *Database) InsertRequest(record *RequestRecord) error {
 		record.NewResponseTimeMs,
 		record.ResponsesMatch,
 		record.MismatchType,
+		record.ServedBy,
 	)
 
 	if err != nil {

@@ -6,7 +6,7 @@ build:
 
 # Run tests
 test:
-	go test -v ./test/...
+	go test -v ./...
 
 # Run the proxy with default settings
 run:

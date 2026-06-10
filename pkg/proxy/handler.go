@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,21 +30,73 @@ func NewProxyHandler(config *Config, database *Database) *ProxyHandler {
 }
 
 func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/__strangler_fig" {
-		p.handleDashboard(w, r)
+	if r.URL.Path == "/__strangler_fig" || strings.HasPrefix(r.URL.Path, "/__strangler_fig/") {
+		p.handleInternal(w, r)
 		return
 	}
 
-	// Apply sampling rate - if random value is above sampling rate, skip logging
+	routeToNewServer := p.config.ShouldRouteToNewServer(r.URL.Path)
+
+	// Apply sampling rate - if random value is above sampling rate, skip
+	// logging and comparison but still honor the routing decision.
 	if rand.Float64() > p.config.SamplingRate {
-		p.forwardToMain(w, r)
+		targetURL := p.config.MainServerURL
+		if routeToNewServer {
+			targetURL = p.config.NewServerURL
+		}
+		p.forwardOnly(w, r, targetURL)
 		return
 	}
 
-	p.handleRequest(w, r)
+	p.handleRequest(w, r, routeToNewServer)
 }
 
-func (p *ProxyHandler) handleRequest(w http.ResponseWriter, r *http.Request) {
+func (p *ProxyHandler) handleInternal(w http.ResponseWriter, r *http.Request) {
+	switch strings.TrimSuffix(r.URL.Path, "/") {
+	case "/__strangler_fig":
+		p.handleDashboard(w, r)
+	case "/__strangler_fig/api/routes":
+		p.handleRoutesAPI(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// handleRoutesAPI exposes the routing table for runtime inspection (GET) and
+// modification (PUT), so migration percentages can be adjusted without
+// restarting the proxy.
+func (p *ProxyHandler) handleRoutesAPI(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		// fall through to the response below
+	case http.MethodPut, http.MethodPost:
+		var routes []Route
+		if err := json.NewDecoder(r.Body).Decode(&routes); err != nil {
+			http.Error(w, fmt.Sprintf("invalid routes JSON: %v", err), http.StatusBadRequest)
+			return
+		}
+		if err := p.config.SetRoutes(routes); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		log.Printf("Routing table updated: %v", routes)
+	default:
+		w.Header().Set("Allow", "GET, PUT, POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	routes := p.config.GetRoutes()
+	if routes == nil {
+		routes = []Route{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(routes); err != nil {
+		log.Printf("Error encoding routes response: %v", err)
+	}
+}
+
+func (p *ProxyHandler) handleRequest(w http.ResponseWriter, r *http.Request, routeToNewServer bool) {
 	startTime := time.Now()
 
 	requestBody, err := io.ReadAll(r.Body)
@@ -58,8 +112,7 @@ func (p *ProxyHandler) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var newResponse *http.Response
 	var mainResponseTime, newResponseTime time.Duration
 	var mainResponseBody, newResponseBody []byte
-
-	routeToNewServer := p.config.ShouldRouteToNewServer(r.URL.Path)
+	var servedBy string
 
 	if routeToNewServer {
 		newResponse, newResponseTime = p.forwardRequest(r, p.config.NewServerURL, requestBody)
@@ -68,14 +121,28 @@ func (p *ProxyHandler) handleRequest(w http.ResponseWriter, r *http.Request) {
 			newResponse.Body.Close()
 			newResponse.Body = io.NopCloser(bytes.NewBuffer(newResponseBody))
 			p.copyResponse(w, newResponse)
+			servedBy = "new"
+
+			mainResponse, mainResponseTime = p.forwardRequest(r, p.config.MainServerURL, requestBody)
+			if mainResponse != nil {
+				mainResponseBody, _ = io.ReadAll(mainResponse.Body)
+				mainResponse.Body.Close()
+				mainResponse.Body = io.NopCloser(bytes.NewBuffer(mainResponseBody))
+			}
 		} else {
-			http.Error(w, "New server unavailable", http.StatusServiceUnavailable)
-		}
-		mainResponse, mainResponseTime = p.forwardRequest(r, p.config.MainServerURL, requestBody)
-		if mainResponse != nil {
-			mainResponseBody, _ = io.ReadAll(mainResponse.Body)
-			mainResponse.Body.Close()
-			mainResponse.Body = io.NopCloser(bytes.NewBuffer(mainResponseBody))
+			// New server unavailable: fall back to the main server so the
+			// client is not affected by the migration target being down.
+			log.Printf("New server unavailable for %s %s, falling back to main server", r.Method, r.URL.Path)
+			mainResponse, mainResponseTime = p.forwardRequest(r, p.config.MainServerURL, requestBody)
+			if mainResponse != nil {
+				mainResponseBody, _ = io.ReadAll(mainResponse.Body)
+				mainResponse.Body.Close()
+				mainResponse.Body = io.NopCloser(bytes.NewBuffer(mainResponseBody))
+				p.copyResponse(w, mainResponse)
+				servedBy = "main"
+			} else {
+				http.Error(w, "Both servers unavailable", http.StatusServiceUnavailable)
+			}
 		}
 	} else {
 		mainResponse, mainResponseTime = p.forwardRequest(r, p.config.MainServerURL, requestBody)
@@ -84,6 +151,7 @@ func (p *ProxyHandler) handleRequest(w http.ResponseWriter, r *http.Request) {
 			mainResponse.Body.Close()
 			mainResponse.Body = io.NopCloser(bytes.NewBuffer(mainResponseBody))
 			p.copyResponse(w, mainResponse)
+			servedBy = "main"
 		} else {
 			http.Error(w, "Main server unavailable", http.StatusServiceUnavailable)
 		}
@@ -95,10 +163,12 @@ func (p *ProxyHandler) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	go p.logRequest(r, requestBody, mainResponse, newResponse, mainResponseTime, newResponseTime, startTime, mainResponseBody, newResponseBody)
+	go p.logRequest(r, requestBody, mainResponse, newResponse, mainResponseTime, newResponseTime, startTime, mainResponseBody, newResponseBody, servedBy)
 }
 
-func (p *ProxyHandler) forwardToMain(w http.ResponseWriter, r *http.Request) {
+// forwardOnly proxies the request to a single server without logging or
+// comparison (used for requests excluded by the sampling rate).
+func (p *ProxyHandler) forwardOnly(w http.ResponseWriter, r *http.Request, serverURL string) {
 	requestBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading request body: %v", err)
@@ -108,11 +178,12 @@ func (p *ProxyHandler) forwardToMain(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 
-	mainResponse, _ := p.forwardRequest(r, p.config.MainServerURL, requestBody)
-	if mainResponse != nil {
-		p.copyResponse(w, mainResponse)
+	response, _ := p.forwardRequest(r, serverURL, requestBody)
+	if response != nil {
+		defer response.Body.Close()
+		p.copyResponse(w, response)
 	} else {
-		http.Error(w, "Main server unavailable", http.StatusServiceUnavailable)
+		http.Error(w, "Server unavailable", http.StatusServiceUnavailable)
 	}
 }
 
@@ -164,7 +235,7 @@ func (p *ProxyHandler) copyResponse(w http.ResponseWriter, resp *http.Response) 
 	io.Copy(w, resp.Body)
 }
 
-func (p *ProxyHandler) logRequest(r *http.Request, requestBody []byte, mainResp, newResp *http.Response, mainTime, newTime time.Duration, startTime time.Time, mainResponseBody, newResponseBody []byte) {
+func (p *ProxyHandler) logRequest(r *http.Request, requestBody []byte, mainResp, newResp *http.Response, mainTime, newTime time.Duration, startTime time.Time, mainResponseBody, newResponseBody []byte, servedBy string) {
 	record := &RequestRecord{
 		Timestamp:          startTime,
 		Method:             r.Method,
@@ -174,6 +245,7 @@ func (p *ProxyHandler) logRequest(r *http.Request, requestBody []byte, mainResp,
 		RequestBody:        string(requestBody),
 		MainResponseTimeMs: int(mainTime.Milliseconds()),
 		NewResponseTimeMs:  int(newTime.Milliseconds()),
+		ServedBy:           servedBy,
 	}
 
 	var mainBody, newBody string
@@ -239,6 +311,13 @@ func (p *ProxyHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := p.database.db.QueryRow("SELECT COUNT(*) FROM requests WHERE responses_match = 0").Scan(&mismatches); err != nil {
 		http.Error(w, "failed to query mismatches", http.StatusInternalServerError)
+		return
+	}
+
+	// Migration progress: how much logged traffic the new server is serving
+	var servedByNew int
+	if err := p.database.db.QueryRow("SELECT COUNT(*) FROM requests WHERE served_by = 'new'").Scan(&servedByNew); err != nil {
+		http.Error(w, "failed to query served_by", http.StatusInternalServerError)
 		return
 	}
 
@@ -316,14 +395,23 @@ func (p *ProxyHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data := struct {
 		Total, Matches, Mismatches int
 		MatchRatio                 float64
+		ServedByNewRatio           float64
 		AvgRelTime                 float64
 		AvgChangeDisplay           string
 		Limit                      int
 		Rows                       []TableRow
+		Routes                     []Route
 	}{
 		Total:      total,
 		Matches:    matches,
 		Mismatches: mismatches,
+		ServedByNewRatio: func() float64 {
+			if total == 0 {
+				return 0
+			}
+			return float64(servedByNew) / float64(total)
+		}(),
+		Routes: p.config.GetRoutes(),
 		MatchRatio: func() float64 {
 			if total == 0 {
 				return 0
@@ -350,7 +438,6 @@ func (p *ProxyHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="refresh" content="10">
   <title>Strangler Fig Proxy Dashboard</title>
   <style>
     :root {
@@ -373,8 +460,76 @@ func (p *ProxyHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
     <p>Matches: {{.Matches}}</p>
     <p>Mismatches: {{.Mismatches}}</p>
     <p>Match ratio: {{printf "%.2f" (mul100 .MatchRatio)}} %</p>
+    <p>Served by new server: {{printf "%.2f" (mul100 .ServedByNewRatio)}} %</p>
     <p>Avg new vs main response time change: {{.AvgChangeDisplay}}</p>
   </section>
+
+  <section id="routes">
+    <h2>Traffic routing</h2>
+    <p>Requests matching these prefixes are served by the <strong>new</strong> server for the given percentage of traffic. Everything else is served by the main server. Changes apply immediately.</p>
+    <table id="routes-table">
+      <thead>
+        <tr><th>Prefix</th><th>% to new server</th><th></th></tr>
+      </thead>
+      <tbody>
+        {{range .Routes}}
+          <tr><td><input type="text" class="route-prefix" value="{{.Prefix}}"></td>
+              <td><input type="number" class="route-percentage" min="0" max="100" step="1" value="{{.Percentage}}"></td>
+              <td><button onclick="this.closest('tr').remove()">Remove</button></td></tr>
+        {{end}}
+      </tbody>
+    </table>
+    <p>
+      <button onclick="addRouteRow()">Add route</button>
+      <button onclick="saveRoutes()">Save routes</button>
+      <span id="routes-status"></span>
+    </p>
+  </section>
+
+  <script>
+    function addRouteRow() {
+      const tbody = document.querySelector('#routes-table tbody');
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td><input type="text" class="route-prefix" placeholder="/api/v2"></td>' +
+        '<td><input type="number" class="route-percentage" min="0" max="100" step="1" value="0"></td>' +
+        '<td><button onclick="this.closest(\'tr\').remove()">Remove</button></td>';
+      tbody.appendChild(tr);
+    }
+
+    async function saveRoutes() {
+      const routes = [];
+      document.querySelectorAll('#routes-table tbody tr').forEach(tr => {
+        const prefix = tr.querySelector('.route-prefix').value.trim();
+        const percentage = parseFloat(tr.querySelector('.route-percentage').value) || 0;
+        if (prefix) routes.push({prefix, percentage});
+      });
+      const status = document.getElementById('routes-status');
+      try {
+        const resp = await fetch('/__strangler_fig/api/routes', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(routes)
+        });
+        if (resp.ok) {
+          status.textContent = 'Saved';
+          setTimeout(() => location.reload(), 500);
+        } else {
+          status.textContent = 'Error: ' + await resp.text();
+        }
+      } catch (err) {
+        status.textContent = 'Error: ' + err;
+      }
+    }
+
+    // Auto-refresh every 10s, paused while editing routes so input is not lost.
+    let refreshTimer = setTimeout(() => location.reload(), 10000);
+    document.addEventListener('focusin', e => {
+      if (e.target.closest('#routes')) {
+        clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }
+    });
+  </script>
 
   <section id="recent">
     <h2>Last {{.Limit}} requests</h2>

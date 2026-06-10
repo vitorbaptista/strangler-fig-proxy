@@ -214,10 +214,12 @@ Given the proxy nature of the system, integration tests will be the primary test
 - Internal web interface at `/__strangler_fig`
 - Basic statistics and mismatch viewing
 
-### Phase 3: Advanced Routing (pending)
+### Phase 3: Advanced Routing
 - URL pattern-based routing to new server
-- Configuration hot-reload
-- Percentage-based traffic splitting
+- Percentage-based traffic splitting per route prefix (`NEW_SERVER_ROUTES=/api/v2=25`)
+- Runtime routing table updates via `/__strangler_fig/api/routes` (GET/PUT) and the dashboard, no restart required
+- Automatic fallback to the main server when a request routed to the new server fails
+- `served_by` tracking and migration progress stat in the dashboard
 
 ### Phase 4: Production Hardening (pending)
 - Metrics and monitoring

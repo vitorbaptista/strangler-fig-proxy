@@ -64,7 +64,7 @@ make run-example
 | `DATABASE_PATH` | SQLite database file path | `./strangler_fig.db` |
 | `DATABASE_MAX_SIZE_MB` | Maximum database size | `1000` |
 | `DATABASE_RETENTION_DAYS` | Data retention period | `7` |
-| `NEW_SERVER_ROUTES` | Comma-separated URL prefixes to route to new server | - |
+| `NEW_SERVER_ROUTES` | Comma-separated URL prefixes to route to new server, optionally with a traffic percentage (`/api/v2=25`) | - |
 
 ### Example Configuration
 ```bash
@@ -72,7 +72,8 @@ export MAIN_SERVER_URL=http://legacy-api:8080
 export NEW_SERVER_URL=http://new-api:8080
 export PORT=8080
 export SAMPLING_RATE=0.1
-export NEW_SERVER_ROUTES=/api/v2,/health
+# /api/v2: 25% of traffic served by the new server; /health: 100%
+export NEW_SERVER_ROUTES=/api/v2=25,/health
 ```
 
 ## How It Works
@@ -87,7 +88,30 @@ export NEW_SERVER_ROUTES=/api/v2,/health
 ### Routing Logic
 - **Default**: Returns main server response, logs comparison with new server
 - **With `NEW_SERVER_ROUTES`**: For matching URL prefixes, returns new server response and logs comparison with main server
+- **Percentage splitting**: A route like `/api/v2=25` serves 25% of matching requests from the new server and the rest from the main server, so traffic can be shifted gradually as confidence grows
+- **Fallback**: If a request routed to the new server fails, the proxy transparently serves the main server's response instead
 - **Sampling**: Only logs the configured percentage of requests to reduce overhead
+
+### Gradual Migration Workflow
+
+1. Deploy the proxy in front of your existing app with no routes configured. All traffic is served by the old app while every response is compared against the new one.
+2. Watch the dashboard until a path's responses consistently match.
+3. Start shifting traffic for that path: `/api/users=10`, then `25`, `50`, `100` — either via `NEW_SERVER_ROUTES` or live through the dashboard / routes API (no restart needed).
+4. Repeat per path until the new app serves 100% of traffic, then remove the proxy and the old codebase.
+
+#### Routes API
+
+The routing table can be inspected and changed at runtime:
+
+```bash
+# View current routes
+curl http://localhost:8080/__strangler_fig/api/routes
+
+# Serve 50% of /api/v2 traffic from the new server, 100% of /health
+curl -X PUT http://localhost:8080/__strangler_fig/api/routes \
+  -H 'Content-Type: application/json' \
+  -d '[{"prefix": "/api/v2", "percentage": 50}, {"prefix": "/health", "percentage": 100}]'
+```
 
 ## Dashboard
 
@@ -98,9 +122,10 @@ http://localhost:8080/__strangler_fig
 
 View:
 - Request statistics and match/mismatch ratios
+- Migration progress (% of traffic served by the new server)
 - Recent response differences
 - Response time metrics
-- Database location and basic info
+- Live routing table editor — change traffic percentages without restarting
 
 ## Docker Usage
 

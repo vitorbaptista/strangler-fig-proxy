@@ -43,8 +43,10 @@ func main() {
 		log.Printf("Sampling rate: %.2f", config.SamplingRate)
 		log.Printf("Dashboard: http://localhost:%s/__strangler_fig", config.Port)
 
-		if len(config.NewServerRoutes) > 0 {
-			log.Printf("New server routes: %v", config.NewServerRoutes)
+		if routes := config.GetRoutes(); len(routes) > 0 {
+			for _, route := range routes {
+				log.Printf("Route: %s -> new server (%.0f%% of traffic)", route.Prefix, route.Percentage)
+			}
 		} else {
 			log.Printf("No new server routes configured - all traffic goes to main server")
 		}
