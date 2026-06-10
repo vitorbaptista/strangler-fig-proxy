@@ -229,6 +229,14 @@ Given the proxy nature of the system, integration tests will be the primary test
 - Proxy correctness: hop-by-hop headers stripped, X-Forwarded-For/Host/Proto set, shared HTTP transport with connection pooling, comparison request mirrored in the background (done)
 - Response transformation capabilities (pending)
 
+### Phase 5: Agent-Driven Migration (in progress)
+- JSON stats API at `/__strangler_fig/api/stats`: overall progress, routing table, per-path work queue (done)
+- Request records API at `/__strangler_fig/api/requests`: recorded request/response pairs filterable by path, match result, method (done)
+- Hurl test-suite export at `/__strangler_fig/api/tests.hurl`: recorded GET/HEAD traffic as runnable regression tests asserting legacy behavior; JSON bodies flattened to structural jsonpath asserts, other bodies byte-exact (done)
+- Write-endpoint verification strategy (pending; candidates: DB-call instrumentation comparison, transaction dry-runs, shadow databases)
+- Auto-promotion/rollback policy in the proxy (pending)
+- Packaged agent runner + CLI (pending)
+
 ## 8. Success Criteria
 
 1. **Zero Impact**: Proxy adds minimal latency to requests

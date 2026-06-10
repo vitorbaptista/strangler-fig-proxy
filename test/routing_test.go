@@ -264,3 +264,169 @@ func TestDashboardPerPathStats(t *testing.T) {
 		t.Error("Expected dashboard to list /stats/path in per-path stats")
 	}
 }
+
+func TestStatsAPI(t *testing.T) {
+	mainServer := NewMainServer()
+	differentServer := NewDifferentServer()
+	defer mainServer.Close()
+	defer differentServer.Close()
+
+	proxyServer, _ := setupProxy(t, mainServer.URL, differentServer.URL, 1.0, []proxy.Route{
+		{Prefix: "/api/v2", Percentage: 25},
+	})
+
+	resp, err := http.Get(proxyServer.URL + "/stats/thing")
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	resp.Body.Close()
+
+	time.Sleep(100 * time.Millisecond)
+
+	statsResp, err := http.Get(proxyServer.URL + "/__strangler_fig/api/stats")
+	if err != nil {
+		t.Fatalf("Failed to GET stats: %v", err)
+	}
+	defer statsResp.Body.Close()
+
+	if statsResp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected status 200 for stats, got %d", statsResp.StatusCode)
+	}
+
+	var stats struct {
+		Total      int           `json:"total"`
+		Mismatches int           `json:"mismatches"`
+		Routes     []proxy.Route `json:"routes"`
+		Paths      []struct {
+			Path  string `json:"path"`
+			Count int    `json:"count"`
+		} `json:"paths"`
+	}
+	if err := json.NewDecoder(statsResp.Body).Decode(&stats); err != nil {
+		t.Fatalf("Failed to decode stats: %v", err)
+	}
+
+	if stats.Total != 1 || stats.Mismatches != 1 {
+		t.Errorf("Expected 1 total and 1 mismatch, got %+v", stats)
+	}
+	if len(stats.Routes) != 1 || stats.Routes[0].Prefix != "/api/v2" {
+		t.Errorf("Expected configured route in stats, got %+v", stats.Routes)
+	}
+	if len(stats.Paths) != 1 || stats.Paths[0].Path != "/stats/thing" || stats.Paths[0].Count != 1 {
+		t.Errorf("Expected per-path stats for /stats/thing, got %+v", stats.Paths)
+	}
+}
+
+func TestRequestsAPI(t *testing.T) {
+	mainServer := NewMainServer()
+	differentServer := NewDifferentServer()
+	defer mainServer.Close()
+	defer differentServer.Close()
+
+	proxyServer, _ := setupProxy(t, mainServer.URL, differentServer.URL, 1.0, nil)
+
+	for _, path := range []string{"/a", "/a", "/b"} {
+		resp, err := http.Get(proxyServer.URL + path)
+		if err != nil {
+			t.Fatalf("Failed to make request: %v", err)
+		}
+		resp.Body.Close()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	resp, err := http.Get(proxyServer.URL + "/__strangler_fig/api/requests?path=/a&match=false&limit=10")
+	if err != nil {
+		t.Fatalf("Failed to GET requests: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var records []proxy.RequestRecord
+	if err := json.NewDecoder(resp.Body).Decode(&records); err != nil {
+		t.Fatalf("Failed to decode records: %v", err)
+	}
+
+	if len(records) != 2 {
+		t.Fatalf("Expected 2 records for /a, got %d", len(records))
+	}
+	for _, record := range records {
+		if record.URLPath != "/a" {
+			t.Errorf("Expected only /a records, got %q", record.URLPath)
+		}
+		if record.ResponsesMatch {
+			t.Error("Expected only mismatching records")
+		}
+		if !strings.Contains(record.MainBody, `"server": "main"`) {
+			t.Errorf("Expected main body in record, got %q", record.MainBody)
+		}
+		if !strings.Contains(record.NewBody, "different_response") {
+			t.Errorf("Expected new body in record, got %q", record.NewBody)
+		}
+	}
+
+	// Invalid match parameter is rejected.
+	bad, err := http.Get(proxyServer.URL + "/__strangler_fig/api/requests?match=banana")
+	if err != nil {
+		t.Fatalf("Failed to GET requests: %v", err)
+	}
+	defer bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Errorf("Expected status 400 for invalid match param, got %d", bad.StatusCode)
+	}
+}
+
+func TestHurlExport(t *testing.T) {
+	mainServer := NewMainServer()
+	newServer := NewNewServer()
+	defer mainServer.Close()
+	defer newServer.Close()
+
+	proxyServer, _ := setupProxy(t, mainServer.URL, newServer.URL, 1.0, nil)
+
+	// Two GETs to the same URL (deduplicated), one to another path, one POST
+	// (excluded from the export).
+	for i := 0; i < 2; i++ {
+		resp, err := http.Get(proxyServer.URL + "/api/users?page=1")
+		if err != nil {
+			t.Fatalf("Failed to make request: %v", err)
+		}
+		resp.Body.Close()
+	}
+	resp, err := http.Get(proxyServer.URL + "/other")
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	resp.Body.Close()
+	postResp, err := http.Post(proxyServer.URL+"/api/users", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("Failed to make POST request: %v", err)
+	}
+	postResp.Body.Close()
+
+	time.Sleep(100 * time.Millisecond)
+
+	hurlResp, err := http.Get(proxyServer.URL + "/__strangler_fig/api/tests.hurl?path=/api")
+	if err != nil {
+		t.Fatalf("Failed to GET hurl export: %v", err)
+	}
+	defer hurlResp.Body.Close()
+
+	body, err := io.ReadAll(hurlResp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read hurl export: %v", err)
+	}
+	suite := string(body)
+
+	if got := strings.Count(suite, "GET {{base_url}}/api/users?page=1"); got != 1 {
+		t.Errorf("Expected 1 deduplicated test entry, got %d:\n%s", got, suite)
+	}
+	if strings.Contains(suite, "/other") {
+		t.Errorf("Expected path filter to exclude /other:\n%s", suite)
+	}
+	if strings.Contains(suite, "POST") {
+		t.Errorf("Expected POST to be excluded:\n%s", suite)
+	}
+	if !strings.Contains(suite, `jsonpath "$['server']" == "main"`) {
+		t.Errorf("Expected jsonpath assert on legacy body:\n%s", suite)
+	}
+}

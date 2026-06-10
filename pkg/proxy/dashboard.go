@@ -27,6 +27,12 @@ func (h *Handler) handleInternal(w http.ResponseWriter, r *http.Request) {
 		h.handleDashboard(w, r)
 	case path == internalPathPrefix+"/api/routes":
 		h.handleRoutesAPI(w, r)
+	case path == internalPathPrefix+"/api/stats":
+		h.handleStatsAPI(w, r)
+	case path == internalPathPrefix+"/api/requests":
+		h.handleRequestsAPI(w, r)
+	case path == internalPathPrefix+"/api/tests.hurl":
+		h.handleHurlAPI(w, r)
 	case strings.HasPrefix(path, internalPathPrefix+"/requests/"):
 		h.handleRequestDetail(w, r, strings.TrimPrefix(path, internalPathPrefix+"/requests/"))
 	default:
@@ -79,12 +85,12 @@ type TableRow struct {
 
 // PathStat aggregates comparison results for one URL path.
 type PathStat struct {
-	Path           string
-	Count          int
-	MatchPct       float64
-	ServedByNewPct float64
-	AvgMainMs      float64
-	AvgNewMs       float64
+	Path           string  `json:"path"`
+	Count          int     `json:"count"`
+	MatchPct       float64 `json:"match_pct"`
+	ServedByNewPct float64 `json:"served_by_new_pct"`
+	AvgMainMs      float64 `json:"avg_main_ms"`
+	AvgNewMs       float64 `json:"avg_new_ms"`
 }
 
 type dashboardData struct {

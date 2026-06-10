@@ -113,6 +113,40 @@ curl -X PUT http://localhost:8080/__strangler_fig/api/routes \
   -d '[{"prefix": "/api/v2", "percentage": 50}, {"prefix": "/health", "percentage": 100}]'
 ```
 
+### Agent-Driven Migration
+
+The proxy exposes machine-readable APIs so a coding agent (or script) can
+drive the rewrite loop autonomously:
+
+```bash
+# Overall progress, routing table, and per-path work queue in one call
+curl http://localhost:8080/__strangler_fig/api/stats
+
+# Recorded request/response pairs - mismatches are reproduction cases
+curl 'http://localhost:8080/__strangler_fig/api/requests?path=/api/users&match=false&limit=10'
+
+# Export recorded read traffic (GET/HEAD) as a Hurl test suite
+curl 'http://localhost:8080/__strangler_fig/api/tests.hurl?path=/api/users' > tests.hurl
+```
+
+The exported suite asserts the legacy server's observed behavior and runs
+against any deployment of the new app with [Hurl](https://hurl.dev):
+
+```bash
+hurl --test --variable base_url=http://localhost:8082 tests.hurl
+```
+
+JSON responses are asserted field by field (key order and formatting don't
+matter, mirroring the proxy's own comparison); other responses are asserted
+byte-exactly. Commit the generated files to the new app's repo and they
+become its regression suite, runnable locally and in CI.
+
+The agent loop: pick the worst path from `/api/stats`, study its mismatches
+via `/api/requests`, implement the endpoint, verify locally with the Hurl
+suite, deploy, watch fresh comparisons, then raise the route percentage via
+`/api/routes`. Only read endpoints are exported as tests; write endpoints
+need a side-effect-aware strategy and a deliberate cutover.
+
 ## Dashboard
 
 Access the monitoring dashboard at:
